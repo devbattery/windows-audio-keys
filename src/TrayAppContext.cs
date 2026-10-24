@@ -4,6 +4,7 @@
 using System;
 using System.Diagnostics;
 using System.Drawing;
+using System.Threading;
 using System.Windows.Forms;
 using GameAudioKeys.Core;
 
@@ -16,6 +17,13 @@ namespace GameAudioKeys
         private readonly ToolStripMenuItem pauseItem;
         private readonly string settingsPath;
         private readonly int ownProcessId;
+        private readonly bool settingsOverridden;
+
+        // Stable WinForms marshaling target, independent of the settings window's
+        // HWND. HideToTray/ShowInTaskbar recreate that HWND, which would otherwise
+        // let a BeginInvoke posted to the old window disappear and leave the
+        // startup controls disabled forever.
+        private readonly Control uiDispatcher;
 
         private AppSettings settings;
         private HotkeyManager hotkeys;
@@ -25,22 +33,35 @@ namespace GameAudioKeys
         private string registrationError;
         private bool suspended;
         private bool exiting;
+        private bool startupBusy;
 
-        public TrayAppContext(SettingsLoadResult load, string settingsPath)
+        public TrayAppContext(
+            SettingsLoadResult load,
+            string settingsPath,
+            bool settingsOverridden,
+            bool startupMode)
         {
             this.settings = load.Settings;
             this.settingsPath = settingsPath;
+            this.settingsOverridden = settingsOverridden;
             this.ownProcessId = Process.GetCurrentProcess().Id;
 
+            // Force a handle on the current UI thread before any background query can
+            // begin. The control is never shown and exists only as a message target.
+            this.uiDispatcher = new Control();
+            if (this.uiDispatcher.Handle == IntPtr.Zero)
+            {
+                throw new InvalidOperationException("자동 시작 상태 알림용 UI 핸들을 만들지 못했습니다.");
+            }
+
             this.form = new MainForm(this);
-            this.MainForm = this.form;
             this.form.LoadSettingsIntoControls(this.settings);
             this.form.SetLastAction(load.StatusKo, load.Corrupt);
 
             this.tray = new NotifyIcon();
             this.tray.Icon = SystemIcons.Application;
             this.tray.Visible = true;
-            this.tray.Text = "Game Audio Keys";
+            this.tray.Text = StartupConstants.ProductName;
 
             ContextMenuStrip menu = new ContextMenuStrip();
             menu.Items.Add("설정 열기", null, delegate { this.form.ShowSettings(); });
@@ -61,7 +82,10 @@ namespace GameAudioKeys
             this.form.EnsureHandle();
             this.InstallForegroundHook();
 
-            if (load.FirstLaunch || load.Corrupt)
+            // Login startup must stay quietly in the tray, but every manual launch
+            // (including one with saved settings) shows the settings window. A corrupt
+            // config also opens it so the problem is visible and actionable.
+            if (StartupLaunchPolicy.ShouldShowSettings(startupMode, load.Corrupt))
             {
                 this.form.ShowSettings();
             }
@@ -260,6 +284,165 @@ namespace GameAudioKeys
                     ? "설정을 저장했습니다. 다른 앱으로 돌아가면 단축키가 활성화됩니다."
                     : "설정을 저장했습니다. 단축키는 일시정지 상태입니다.",
                 false);
+        }
+
+        // The Task Scheduler registration is intentionally separate from the audio
+        // settings save: it is a wholly different Windows subsystem, and a failed
+        // registration must not roll back unrelated audio settings.
+        public void RefreshStartupState(MainForm source)
+        {
+            if (this.exiting || source == null)
+            {
+                return;
+            }
+
+            if (this.settingsOverridden)
+            {
+                source.SetStartupUnavailable(
+                    "테스트 설정 폴더를 사용하는 동안에는 자동 시작 작업을 조회하거나 변경하지 않습니다. "
+                    + "임시 앱 위치가 등록되지 않도록 일반 실행에서 설정하세요.");
+                return;
+            }
+
+            if (this.startupBusy)
+            {
+                return;
+            }
+
+            this.startupBusy = true;
+            source.SetStartupBusy(true);
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                StartupTaskState state = StartupTaskHost.QueryState();
+                this.PostToUi(delegate
+                {
+                    this.startupBusy = false;
+                    if (!source.IsDisposed)
+                    {
+                        source.SetStartupBusy(false);
+                        source.SetStartupState(state);
+                    }
+                });
+            });
+        }
+
+        public void ApplyStartupSetting(MainForm source, bool enable)
+        {
+            if (this.exiting || source == null)
+            {
+                return;
+            }
+
+            if (this.settingsOverridden)
+            {
+                source.SetStartupUnavailable(
+                    "테스트 설정 폴더를 사용하는 동안에는 자동 시작 작업을 조회하거나 변경하지 않습니다. "
+                    + "임시 앱 위치가 등록되지 않도록 일반 실행에서 설정하세요.");
+                return;
+            }
+
+            if (this.startupBusy)
+            {
+                source.SetStartupMessage("자동 시작 설정을 처리하는 중입니다. 잠시 기다리세요.", true);
+                return;
+            }
+
+            this.startupBusy = true;
+            source.SetStartupBusy(true);
+            source.SetStartupMessage(
+                enable
+                    ? "Windows 관리자 승인을 기다리는 중입니다..."
+                    : "자동 시작 작업을 정리하는 중입니다...",
+                false);
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                StartupApplyResult result;
+                StartupTaskState state;
+                try
+                {
+                    result = StartupTaskHost.Apply(enable);
+                    state = result.State != null ? result.State : StartupTaskHost.QueryState();
+                }
+                catch (Exception ex)
+                {
+                    result = new StartupApplyResult();
+                    result.MessageKo = "자동 시작 설정 중 오류가 발생했습니다: " + ex.Message;
+                    state = StartupTaskHost.QueryState();
+                }
+
+                this.PostToUi(delegate
+                {
+                    this.startupBusy = false;
+                    if (!source.IsDisposed)
+                    {
+                        source.SetStartupBusy(false);
+                        source.SetStartupState(state);
+                        this.form.SetLastAction(result.MessageKo, !result.Success);
+                    }
+                });
+            });
+        }
+
+        // Background startup queries must never keep the window's buttons disabled
+        // when the settings HWND is hidden, recreated or disposed. The callback runs
+        // on the stable dispatcher control, then updates the still-living form
+        // controls directly on the UI thread.
+        private void PostToUi(Action action)
+        {
+            if (this.exiting)
+            {
+                this.ResetStartupBusy();
+                return;
+            }
+
+            try
+            {
+                if (this.uiDispatcher.IsDisposed)
+                {
+                    this.ResetStartupBusy();
+                    return;
+                }
+
+                this.uiDispatcher.BeginInvoke(action);
+            }
+            catch (Exception)
+            {
+                this.ResetStartupBusy();
+            }
+        }
+
+        // Called from the worker thread when dispatch itself fails. The busy flag is
+        // cleared first; if the UI thread is still alive the controls are recovered
+        // there too, so a lost callback cannot permanently disable them.
+        private void ResetStartupBusy()
+        {
+            this.startupBusy = false;
+            try
+            {
+                if (this.uiDispatcher.InvokeRequired)
+                {
+                    this.uiDispatcher.BeginInvoke(new MethodInvoker(this.RecoverUiBusyState));
+                }
+                else
+                {
+                    this.RecoverUiBusyState();
+                }
+            }
+            catch (Exception)
+            {
+                // The UI/message loop is already gone; nothing can remain disabled.
+            }
+        }
+
+        private void RecoverUiBusyState()
+        {
+            this.startupBusy = false;
+            if (!this.form.IsDisposed)
+            {
+                this.form.SetStartupBusy(false);
+            }
         }
 
         private void InstallForegroundHook()
@@ -511,23 +694,23 @@ namespace GameAudioKeys
             string text;
             if (this.hookError != null)
             {
-                text = "Game Audio Keys - 포커스 감시 오류";
+                text = StartupConstants.ProductName + " - 포커스 감시 오류";
             }
             else if (!this.settings.Enabled)
             {
-                text = "Game Audio Keys - 일시정지";
+                text = StartupConstants.ProductName + " - 일시정지";
             }
             else if (this.suspended)
             {
-                text = "Game Audio Keys - 설정 창 활성";
+                text = StartupConstants.ProductName + " - 설정 창 활성";
             }
             else if (this.registrationError != null)
             {
-                text = "Game Audio Keys - 단축키 충돌";
+                text = StartupConstants.ProductName + " - 단축키 충돌";
             }
             else
             {
-                text = "Game Audio Keys - 사용 중";
+                text = StartupConstants.ProductName + " - 사용 중";
             }
 
             if (text.Length > 63)
@@ -590,6 +773,16 @@ namespace GameAudioKeys
             }
 
             this.form.Close();
+
+            try
+            {
+                this.uiDispatcher.Dispose();
+            }
+            catch (Exception)
+            {
+                // Shutdown must not depend on the dispatcher control cleanup.
+            }
+
             this.ExitThread();
         }
     }

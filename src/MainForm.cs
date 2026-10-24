@@ -16,17 +16,24 @@ namespace GameAudioKeys
         private BindingRow volumeDownRow;
         private NumericUpDown stepInput;
         private CheckBox enabledInput;
+        private CheckBox startupInput;
+        private Button startupApply;
+        private Label startupStateLabel;
+        private Label startupNoteLabel;
         private Label noticeLabel;
         private Label stateLabel;
         private Label lastLabel;
+        private bool startupBusy;
+        private bool startupBlocked;
+        private bool startupUnknown;
 
         public MainForm(TrayAppContext context)
         {
             this.context = context;
-            this.Text = "Game Audio Keys - 설정";
+            this.Text = StartupConstants.ProductName + " - 설정";
             this.StartPosition = FormStartPosition.CenterScreen;
-            this.ClientSize = new Size(680, 520);
-            this.MinimumSize = new Size(620, 470);
+            this.ClientSize = new Size(680, 660);
+            this.MinimumSize = new Size(620, 600);
             this.AutoScaleMode = AutoScaleMode.Dpi;
             this.Font = new Font("Malgun Gothic", 9F, FontStyle.Regular, GraphicsUnit.Point);
             this.Icon = SystemIcons.Application;
@@ -101,6 +108,105 @@ namespace GameAudioKeys
             this.lastLabel.ForeColor = error ? Color.Firebrick : Color.FromArgb(40, 40, 40);
         }
 
+        // The checkbox mirrors the ACTUAL Task Scheduler state read by the background
+        // query. An owned task that is enabled but still points at an old location is
+        // checked (its actual state) while the label separately asks for a refresh.
+        // Unreadable or foreign tasks use an indeterminate, disabled checkbox.
+        public void SetStartupState(StartupTaskState state)
+        {
+            if (this.InvokeRequired)
+            {
+                this.BeginInvoke(new Action<StartupTaskState>(this.SetStartupState), new object[] { state });
+                return;
+            }
+
+            if (this.IsDisposed)
+            {
+                return;
+            }
+
+            bool known = state != null && state.CheckboxKnown;
+            this.startupUnknown = !known;
+            this.startupInput.ThreeState = !known;
+            this.startupInput.CheckState = known
+                ? (state.CheckboxChecked ? CheckState.Checked : CheckState.Unchecked)
+                : CheckState.Indeterminate;
+            this.startupStateLabel.Text = state == null ? "상태 확인 중..." : state.MessageKo;
+            this.startupStateLabel.ForeColor = state != null && state.IsError
+                ? Color.Firebrick
+                : (state != null && state.IsEnabled ? Color.FromArgb(0, 95, 45) : Color.FromArgb(80, 80, 80));
+            this.UpdateStartupControls();
+        }
+
+        public void SetStartupMessage(string text, bool error)
+        {
+            if (this.InvokeRequired)
+            {
+                this.BeginInvoke(new Action<string, bool>(this.SetStartupMessage), new object[] { text, error });
+                return;
+            }
+
+            if (this.IsDisposed)
+            {
+                return;
+            }
+
+            this.startupStateLabel.Text = text;
+            this.startupStateLabel.ForeColor = error ? Color.Firebrick : Color.FromArgb(80, 80, 80);
+        }
+
+        public void SetStartupUnavailable(string message)
+        {
+            if (this.InvokeRequired)
+            {
+                this.BeginInvoke(new Action<string>(this.SetStartupUnavailable), new object[] { message });
+                return;
+            }
+
+            if (this.IsDisposed)
+            {
+                return;
+            }
+
+            this.startupBlocked = true;
+            this.startupUnknown = true;
+            this.startupInput.ThreeState = true;
+            this.startupInput.CheckState = CheckState.Indeterminate;
+            this.startupStateLabel.Text = message;
+            this.startupStateLabel.ForeColor = Color.Firebrick;
+            this.UpdateStartupControls();
+        }
+
+        public void SetStartupBusy(bool busy)
+        {
+            if (this.InvokeRequired)
+            {
+                this.BeginInvoke(new Action<bool>(this.SetStartupBusy), new object[] { busy });
+                return;
+            }
+
+            if (this.IsDisposed)
+            {
+                return;
+            }
+
+            this.startupBusy = busy;
+            this.UpdateStartupControls();
+        }
+
+        private void UpdateStartupControls()
+        {
+            if (this.startupInput == null || this.startupApply == null)
+            {
+                return;
+            }
+
+            bool usable = !this.startupBusy && !this.startupBlocked && !this.startupUnknown;
+            this.startupInput.Enabled = usable;
+            this.startupApply.Enabled = usable;
+            this.startupApply.Text = this.startupBusy ? "적용 중..." : "자동 시작 적용";
+        }
+
         public void ShowSettings()
         {
             if (this.InvokeRequired)
@@ -122,6 +228,7 @@ namespace GameAudioKeys
 
             this.Activate();
             this.BringToFront();
+            this.context.RefreshStartupState(this);
         }
 
         public void HideToTray()
@@ -204,8 +311,9 @@ namespace GameAudioKeys
             root.Dock = DockStyle.Fill;
             root.Padding = new Padding(14);
             root.ColumnCount = 1;
-            root.RowCount = 6;
+            root.RowCount = 7;
             root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -228,7 +336,8 @@ namespace GameAudioKeys
             root.Controls.Add(this.BuildBindingGroup(), 0, 1);
             root.Controls.Add(this.BuildOptionRow(), 0, 2);
             root.Controls.Add(this.BuildButtonRow(), 0, 3);
-            root.Controls.Add(this.BuildStatusGroup(), 0, 4);
+            root.Controls.Add(this.BuildStartupGroup(), 0, 4);
+            root.Controls.Add(this.BuildStatusGroup(), 0, 5);
 
             Label footer = new Label();
             footer.AutoSize = true;
@@ -238,8 +347,8 @@ namespace GameAudioKeys
             footer.ForeColor = Color.FromArgb(100, 100, 100);
             footer.Text =
                 "창을 닫거나 최소화하면 트레이로 숨겨집니다. 완전히 종료하려면 트레이 아이콘 메뉴에서 '종료'를 선택하세요. "
-                + "설정은 %LOCALAPPDATA%\\GameAudioKeys\\settings.json 에 저장됩니다.";
-            root.Controls.Add(footer, 0, 5);
+                + "설정은 %LOCALAPPDATA%\\GameAudioKeys\\settings.json 에 저장되며, 자동 시작 작업은 Windows 작업 스케줄러에 등록됩니다.";
+            root.Controls.Add(footer, 0, 6);
 
             this.Controls.Add(root);
             root.Layout += delegate { this.UpdateWrappingWidths(); };
@@ -430,6 +539,77 @@ namespace GameAudioKeys
             return panel;
         }
 
+        private Control BuildStartupGroup()
+        {
+            GroupBox group = new GroupBox();
+            group.Text = "로그인 자동 시작";
+            group.Dock = DockStyle.Fill;
+            group.AutoSize = true;
+            group.AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            group.Padding = new Padding(12, 8, 12, 10);
+            group.Margin = new Padding(0, 0, 0, 8);
+
+            TableLayoutPanel grid = new TableLayoutPanel();
+            grid.Dock = DockStyle.Fill;
+            grid.AutoSize = true;
+            grid.ColumnCount = 2;
+            grid.RowCount = 3;
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            grid.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100f));
+            for (int i = 0; i < 3; i++)
+            {
+                grid.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            }
+
+            this.startupInput = new CheckBox();
+            this.startupInput.Text = "Windows 로그인 시 관리자 권한으로 자동 시작";
+            this.startupInput.AutoSize = true;
+            this.startupInput.Anchor = AnchorStyles.Left;
+            this.startupInput.Margin = new Padding(0, 4, 12, 4);
+            this.startupInput.AccessibleName = "Windows 로그인 시 관리자 권한으로 자동 시작";
+            grid.Controls.Add(this.startupInput, 0, 0);
+
+            this.startupApply = new Button();
+            this.startupApply.Text = "자동 시작 적용";
+            this.startupApply.AutoSize = true;
+            this.startupApply.Padding = new Padding(10, 3, 10, 3);
+            this.startupApply.Margin = new Padding(0, 1, 0, 1);
+            this.startupApply.AccessibleName = "자동 시작 설정 적용";
+            this.startupApply.Click += delegate
+            {
+                this.context.ApplyStartupSetting(this, this.startupInput.Checked);
+            };
+            grid.Controls.Add(this.startupApply, 1, 0);
+
+            this.startupStateLabel = new Label();
+            this.startupStateLabel.AutoSize = true;
+            this.startupStateLabel.Dock = DockStyle.Fill;
+            this.startupStateLabel.MaximumSize = new Size(600, 0);
+            this.startupStateLabel.Margin = new Padding(0, 6, 0, 4);
+            this.startupStateLabel.ForeColor = Color.FromArgb(80, 80, 80);
+            this.startupStateLabel.Text = "상태 확인 중...";
+            this.startupStateLabel.AccessibleName = "자동 시작 상태";
+            grid.Controls.Add(this.startupStateLabel, 0, 1);
+            grid.SetColumnSpan(this.startupStateLabel, 2);
+
+            this.startupNoteLabel = new Label();
+            this.startupNoteLabel.AutoSize = true;
+            this.startupNoteLabel.Dock = DockStyle.Fill;
+            this.startupNoteLabel.MaximumSize = new Size(600, 0);
+            this.startupNoteLabel.Margin = new Padding(0, 0, 0, 0);
+            this.startupNoteLabel.ForeColor = Color.FromArgb(100, 100, 100);
+            this.startupNoteLabel.Text =
+                (StartupTaskHost.IsElevated()
+                    ? "현재 실행 권한: 관리자."
+                    : "현재 실행 권한: 일반 사용자.")
+                + " 적용할 때 Windows 관리자 승인이 필요할 수 있으며, 다음 로그인부터 자동 시작은 관리자 권한으로 실행됩니다.";
+            grid.Controls.Add(this.startupNoteLabel, 0, 2);
+            grid.SetColumnSpan(this.startupNoteLabel, 2);
+
+            group.Controls.Add(grid);
+            return group;
+        }
+
         private Control BuildStatusGroup()
         {
             GroupBox group = new GroupBox();
@@ -479,6 +659,15 @@ namespace GameAudioKeys
             int statusWidth = Math.Max(220, width - 40);
             this.stateLabel.MaximumSize = new Size(statusWidth, 0);
             this.lastLabel.MaximumSize = new Size(statusWidth, 0);
+            if (this.startupStateLabel != null)
+            {
+                this.startupStateLabel.MaximumSize = new Size(statusWidth, 0);
+            }
+
+            if (this.startupNoteLabel != null)
+            {
+                this.startupNoteLabel.MaximumSize = new Size(statusWidth, 0);
+            }
         }
 
         private static void SelectBinding(BindingRow row, HotkeyBinding binding)
