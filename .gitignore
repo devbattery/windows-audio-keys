@@ -1,0 +1,15 @@
+/bin/
+/dist/
+/qa/
+/opencode-*.jsonl
+/opencode-*.stderr.log
+/probe/result-*.json
+/probe/RESULTS.ko.md
+/TASK.md
+/PROBE_TASK.md
+/PROBE_REVIEW.md
+/APP_REVIEW.md
+/BUG_*.md
+*.tmp
+*.bak
+.vs/
