@@ -414,7 +414,7 @@ namespace GameAudioKeys
                 {
                     string direction = delta > 0 ? "+" : string.Empty;
                     outcome.StatusKo = target + " 볼륨 " + direction
-                        + delta.ToString(CultureInfo.InvariantCulture) + "%p"
+                        + delta.ToString(CultureInfo.InvariantCulture) + "%"
                         + " · 세션 " + changed.Count.ToString(CultureInfo.InvariantCulture) + "개";
                 }
 

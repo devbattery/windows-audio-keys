@@ -549,9 +549,9 @@ namespace GameAudioKeys
             this.volumeDownRecorder = this.NewRecorder("볼륨 내리기");
             rows.Controls.Add(this.NewRow(GlyphKind.VolumeDown, "볼륨 내리기", "단계만큼 낮춥니다", this.volumeDownRecorder), 0, 2);
 
-            this.stepInput = new Stepper(1, 20, "%p", "볼륨 단계");
+            this.stepInput = new Stepper(1, 20, "%", "볼륨 단계");
             this.stepInput.ValueChanged += delegate { this.UpdateDirtyState(); };
-            rows.Controls.Add(this.NewRow(null, "볼륨 단계", "키를 한 번 누를 때 바뀌는 양 (1~20%p)", this.stepInput), 0, 3);
+            rows.Controls.Add(this.NewRow(null, "볼륨 단계", "키를 한 번 누를 때 바뀌는 양 (1~20%)", this.stepInput), 0, 3);
             return rows;
         }
 

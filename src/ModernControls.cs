@@ -713,7 +713,7 @@ namespace GameAudioKeys
 
     #region 스테퍼
 
-    // "− 5%p +" 형태의 정수 입력(1~20). 방향키·+/−·Home/End·마우스 휠·클릭으로 바꾼다.
+    // "− 5% +" 형태의 정수 입력(1~20). 방향키·+/−·Home/End·마우스 휠·클릭으로 바꾼다.
     internal sealed class Stepper : ThemedControl
     {
         private readonly int minimum;
