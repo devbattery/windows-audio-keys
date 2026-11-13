@@ -207,6 +207,31 @@ namespace GameAudioKeys
             copy.Enabled = this.Enabled;
             return copy;
         }
+
+        // 설정 창의 "저장하지 않은 변경 사항" 표시 근거. 두 바인딩이 모두 없으면 같다고 본다.
+        public static bool AreEquivalent(AppSettings left, AppSettings right)
+        {
+            if (left == null || right == null)
+            {
+                return left == null && right == null;
+            }
+
+            return SameBinding(left.Mute, right.Mute)
+                && SameBinding(left.VolumeUp, right.VolumeUp)
+                && SameBinding(left.VolumeDown, right.VolumeDown)
+                && left.Step == right.Step
+                && left.Enabled == right.Enabled;
+        }
+
+        private static bool SameBinding(HotkeyBinding left, HotkeyBinding right)
+        {
+            if (left == null || right == null)
+            {
+                return left == null && right == null;
+            }
+
+            return left.SameAs(right);
+        }
     }
 
     internal sealed class SettingsValidation

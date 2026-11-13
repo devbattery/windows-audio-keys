@@ -41,6 +41,8 @@ $hotkeys = Join-Path $projectRoot 'src\HotkeyManager.cs'
 $startup = Join-Path $projectRoot 'src\Startup.cs'
 $startupService = Join-Path $projectRoot 'src\StartupTaskService.cs'
 $mainForm = Join-Path $projectRoot 'src\MainForm.cs'
+$uiTheme = Join-Path $projectRoot 'src\UiTheme.cs'
+$appIcons = Join-Path $projectRoot 'src\AppIcons.cs'
 $trayContext = Join-Path $projectRoot 'src\TrayAppContext.cs'
 $program = Join-Path $projectRoot 'src\Program.cs'
 $appConfig = Join-Path $projectRoot 'src\app.config'
@@ -65,6 +67,8 @@ $required = @(
     $startup
     $startupService
     $mainForm
+    $uiTheme
+    $appIcons
     $trayContext
     $program
     $appConfig
@@ -131,6 +135,8 @@ Invoke-Compiler -Description 'Application build' -Arguments ($common + @(
     $appLogic
     $hotkeys
     $startup
+    $uiTheme
+    $appIcons
     $mainForm
     $trayContext
     $startupService

@@ -35,6 +35,11 @@ namespace GameAudioKeys
         private bool exiting;
         private bool startupBusy;
 
+        // 트레이 아이콘: 사용 중(강조색)·일시정지(회색)·오류(빨강). 시작 시 한 번만 만든다.
+        private readonly Icon activeTrayIcon;
+        private readonly Icon idleTrayIcon;
+        private readonly Icon errorTrayIcon;
+
         public TrayAppContext(
             SettingsLoadResult load,
             string settingsPath,
@@ -58,8 +63,13 @@ namespace GameAudioKeys
             this.form.LoadSettingsIntoControls(this.settings);
             this.form.SetLastAction(load.StatusKo, load.Corrupt);
 
+            int traySize = SystemInformation.SmallIconSize.Width;
+            this.activeTrayIcon = AppIcons.Create(AppIcons.TileColorFor(RuntimeState.Active), traySize);
+            this.idleTrayIcon = AppIcons.Create(AppIcons.TileColorFor(RuntimeState.Paused), traySize);
+            this.errorTrayIcon = AppIcons.Create(AppIcons.TileColorFor(RuntimeState.Error), traySize);
+
             this.tray = new NotifyIcon();
-            this.tray.Icon = SystemIcons.Application;
+            this.tray.Icon = this.idleTrayIcon;
             this.tray.Visible = true;
             this.tray.Text = StartupConstants.ProductName;
 
@@ -91,7 +101,7 @@ namespace GameAudioKeys
             }
 
             this.RefreshForegroundState();
-            this.UpdateTrayText();
+            this.UpdateStatusIndicators();
         }
 
         public bool IsExiting
@@ -150,8 +160,7 @@ namespace GameAudioKeys
                 this.UpdateHotkeyLifecycle();
             }
 
-            this.UpdateStateLabel();
-            this.UpdateTrayText();
+            this.UpdateStatusIndicators();
         }
 
         public void HandleHotkey(int id)
@@ -236,7 +245,7 @@ namespace GameAudioKeys
                 {
                     source.SetLastAction(registerError, true);
                     this.UpdateHotkeyLifecycle();
-                    source.SetRuntimeStatus("단축키 충돌: " + registerError, true);
+                    source.SetRuntimeStatus(RuntimeState.Conflict, "단축키 충돌: " + registerError);
                     return;
                 }
             }
@@ -278,7 +287,7 @@ namespace GameAudioKeys
 
             source.LoadSettingsIntoControls(this.settings);
             this.UpdateHotkeyLifecycle();
-            this.UpdateTrayText();
+            this.UpdateStatusIndicators();
             source.SetLastAction(
                 this.settings.Enabled
                     ? "설정을 저장했습니다. 다른 앱으로 돌아가면 단축키가 활성화됩니다."
@@ -518,7 +527,7 @@ namespace GameAudioKeys
                 this.settings.Enabled = false;
                 this.UpdateHotkeyLifecycle();
                 this.form.LoadSettingsIntoControls(this.settings);
-                this.UpdateTrayText();
+                this.UpdateStatusIndicators();
 
                 string pauseError;
                 if (SettingsStore.TrySave(this.settingsPath, this.settings, out pauseError))
@@ -548,8 +557,7 @@ namespace GameAudioKeys
                 this.form.SetLastAction(
                     "포커스 감시를 시작하지 못해 단축키를 다시 시작할 수 없습니다. 앱을 재시작하세요.",
                     true);
-                this.UpdateStateLabel();
-                this.UpdateTrayText();
+                this.UpdateStatusIndicators();
                 this.UpdatePauseMenu();
                 return;
             }
@@ -560,8 +568,7 @@ namespace GameAudioKeys
             if (!this.hotkeys.TryValidateTemporary(proposed, out registerError))
             {
                 this.form.SetLastAction("단축키를 다시 시작하지 못했습니다: " + registerError, true);
-                this.UpdateStateLabel();
-                this.UpdateTrayText();
+                this.UpdateStatusIndicators();
                 this.UpdatePauseMenu();
                 return;
             }
@@ -572,8 +579,7 @@ namespace GameAudioKeys
                 this.form.SetLastAction(
                     "단축키를 다시 시작하지 못했습니다. 상태를 저장할 수 없습니다: " + saveError,
                     true);
-                this.UpdateStateLabel();
-                this.UpdateTrayText();
+                this.UpdateStatusIndicators();
                 this.UpdatePauseMenu();
                 return;
             }
@@ -606,7 +612,7 @@ namespace GameAudioKeys
 
             this.form.LoadSettingsIntoControls(this.settings);
             this.UpdateHotkeyLifecycle();
-            this.UpdateTrayText();
+            this.UpdateStatusIndicators();
             this.form.SetLastAction("단축키를 다시 시작했습니다.", false);
         }
 
@@ -614,7 +620,7 @@ namespace GameAudioKeys
         {
             if (this.hotkeys == null)
             {
-                this.UpdateStateLabel();
+                this.UpdateStatusIndicators();
                 return;
             }
 
@@ -638,43 +644,54 @@ namespace GameAudioKeys
                 this.registrationError = null;
             }
 
-            this.UpdateStateLabel();
-            this.UpdateTrayText();
+            this.UpdateStatusIndicators();
             this.UpdatePauseMenu();
         }
 
-        private void UpdateStateLabel()
+        // 설정 창 상태 문구·배지와 트레이 표시가 같은 판정을 쓰도록 한곳에서 계산한다.
+        private RuntimeState ComputeRuntimeState(out string text)
         {
-            string text;
-            bool error = false;
             if (this.hookError != null)
             {
                 text = this.hookError;
-                error = true;
-            }
-            else if (!this.settings.Enabled)
-            {
-                text = "일시정지됨 - 단축키가 등록되지 않았습니다. 트레이 메뉴에서 다시 시작할 수 있습니다.";
-            }
-            else if (this.suspended)
-            {
-                text = "설정 창이 활성 상태라 단축키를 잠시 해제했습니다. 다른 앱으로 돌아가면 다시 등록됩니다.";
-            }
-            else if (this.registrationError != null)
-            {
-                text = "단축키 충돌: " + this.registrationError;
-                error = true;
-            }
-            else if (this.hotkeys != null && this.hotkeys.HasRegistrations)
-            {
-                text = "사용 중 - " + this.DisplayBindings() + " 가 시스템에 등록되어 있습니다.";
-            }
-            else
-            {
-                text = "대기 중 - 단축키가 아직 등록되지 않았습니다.";
+                return RuntimeState.Error;
             }
 
-            this.form.SetRuntimeStatus(text, error);
+            if (!this.settings.Enabled)
+            {
+                text = "일시정지됨 - 단축키가 등록되지 않았습니다. 트레이 메뉴에서 다시 시작할 수 있습니다.";
+                return RuntimeState.Paused;
+            }
+
+            if (this.suspended)
+            {
+                text = "설정 창이 활성 상태라 단축키를 잠시 해제했습니다. 다른 앱으로 돌아가면 다시 등록됩니다.";
+                return RuntimeState.Suspended;
+            }
+
+            if (this.registrationError != null)
+            {
+                text = "단축키 충돌: " + this.registrationError;
+                return RuntimeState.Conflict;
+            }
+
+            if (this.hotkeys != null && this.hotkeys.HasRegistrations)
+            {
+                text = "사용 중 - " + this.DisplayBindings() + " 가 시스템에 등록되어 있습니다.";
+                return RuntimeState.Active;
+            }
+
+            text = "대기 중 - 단축키가 아직 등록되지 않았습니다.";
+            return RuntimeState.Waiting;
+        }
+
+        // 상태를 한 번만 판정해 설정 창(배지·문구)과 트레이(툴팁·아이콘)에 함께 반영한다.
+        private void UpdateStatusIndicators()
+        {
+            string text;
+            RuntimeState state = this.ComputeRuntimeState(out text);
+            this.form.SetRuntimeStatus(state, text);
+            this.UpdateTray(state);
         }
 
         private string DisplayBindings()
@@ -689,38 +706,40 @@ namespace GameAudioKeys
                 + " / " + this.settings.VolumeDown.Display;
         }
 
-        private void UpdateTrayText()
+        private void UpdateTray(RuntimeState state)
         {
-            string text;
-            if (this.hookError != null)
+            if (this.tray == null)
             {
-                text = StartupConstants.ProductName + " - 포커스 감시 오류";
+                return;
             }
-            else if (!this.settings.Enabled)
-            {
-                text = StartupConstants.ProductName + " - 일시정지";
-            }
-            else if (this.suspended)
-            {
-                text = StartupConstants.ProductName + " - 설정 창 활성";
-            }
-            else if (this.registrationError != null)
-            {
-                text = StartupConstants.ProductName + " - 단축키 충돌";
-            }
-            else
-            {
-                text = StartupConstants.ProductName + " - 사용 중";
-            }
+
+            string label;
+            Color textColor, fill, dot;
+            UiTheme.Describe(state, out label, out textColor, out fill, out dot);
+            string text = StartupConstants.ProductName + " - "
+                + (state == RuntimeState.Error ? "포커스 감시 오류" : label);
 
             if (text.Length > 63)
             {
                 text = text.Substring(0, 63);
             }
 
+            Icon icon = state == RuntimeState.Active || state == RuntimeState.Suspended
+                ? this.activeTrayIcon
+                : (state == RuntimeState.Conflict || state == RuntimeState.Error ? this.errorTrayIcon : this.idleTrayIcon);
+
             try
             {
-                this.tray.Text = text;
+                // 포그라운드 변경마다 불리므로 바뀐 경우에만 셸 알림 영역을 갱신한다.
+                if (this.tray.Text != text)
+                {
+                    this.tray.Text = text;
+                }
+
+                if (!object.ReferenceEquals(this.tray.Icon, icon))
+                {
+                    this.tray.Icon = icon;
+                }
             }
             catch (Exception)
             {
@@ -766,6 +785,9 @@ namespace GameAudioKeys
             {
                 this.tray.Visible = false;
                 this.tray.Dispose();
+                this.activeTrayIcon.Dispose();
+                this.idleTrayIcon.Dispose();
+                this.errorTrayIcon.Dispose();
             }
             catch (Exception)
             {

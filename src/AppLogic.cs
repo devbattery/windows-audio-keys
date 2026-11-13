@@ -89,8 +89,101 @@ namespace GameAudioKeys
         }
     }
 
+    // 전체 프로세스 스냅샷(Toolhelp, 수 ms)이 꼭 필요한지 미리 판단하는 순수 함수.
+    // Targeting.IsTarget은 활성 PID가 아닌 세션을 "같은 실행 파일 경로의 검증된 자손"일
+    // 때만 대상으로 삼는다. 경로가 다르거나 읽을 수 없는 세션은 조상 검사 결과와 무관하게
+    // 대상이 아니므로, 경로가 같은 후보가 하나라도 있을 때만 조상 검증용 스냅샷을 만든다.
+    internal static class TargetPrefilter
+    {
+        public static bool NeedsAncestry(int foregroundPid, IList<AudioSession> sessions, Func<int, string> pathOf)
+        {
+            if (foregroundPid <= 0 || sessions == null || pathOf == null)
+            {
+                return false;
+            }
+
+            string foregroundPath = null;
+            bool foregroundPathRead = false;
+            for (int i = 0; i < sessions.Count; i++)
+            {
+                AudioSession session = sessions[i];
+                if (!IsAncestryCandidate(session, foregroundPid))
+                {
+                    continue;
+                }
+
+                // 활성 앱 경로는 후보가 있을 때 한 번만 조회한다.
+                if (!foregroundPathRead)
+                {
+                    foregroundPath = pathOf(foregroundPid);
+                    foregroundPathRead = true;
+                    if (string.IsNullOrEmpty(foregroundPath))
+                    {
+                        // 활성 앱 경로를 모르면 어떤 자손도 경로 일치를 통과할 수 없다.
+                        return false;
+                    }
+                }
+
+                string path = pathOf(session.Pid);
+                if (!string.IsNullOrEmpty(path)
+                    && string.Equals(path, foregroundPath, StringComparison.OrdinalIgnoreCase))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        // SelectSessions에서 어차피 제외되는 세션(교차 프로세스·시스템 사운드·만료)과
+        // 활성 PID 자신·System(4)·잘못된 PID는 조상 검사 대상이 아니다.
+        private static bool IsAncestryCandidate(AudioSession session, int foregroundPid)
+        {
+            return session != null
+                && !session.CrossProcess
+                && !session.SystemSounds
+                && session.State != 2
+                && session.Pid > 4
+                && session.Pid != foregroundPid;
+        }
+    }
+
+    // 단일 PID의 실행 파일 전체 경로 조회. 스냅샷 없이 OpenProcess 한 번으로 끝난다.
+    internal static class ProcessImage
+    {
+        public static string TryGetPath(int pid)
+        {
+            if (pid <= 0)
+            {
+                return null;
+            }
+
+            IntPtr handle = Native.OpenProcess(Native.PROCESS_QUERY_LIMITED_INFORMATION, false, pid);
+            if (handle == IntPtr.Zero)
+            {
+                return null;
+            }
+
+            try
+            {
+                System.Text.StringBuilder buffer = new System.Text.StringBuilder(1024);
+                int size = buffer.Capacity;
+                return Native.QueryFullProcessImageNameW(handle, 0, buffer, ref size)
+                    ? buffer.ToString(0, size)
+                    : null;
+            }
+            finally
+            {
+                Native.CloseHandle(handle);
+            }
+        }
+    }
+
     internal static class AudioController
     {
+        // 자기 프로세스 ID는 실행 중 바뀌지 않으므로 한 번만 읽는다.
+        private static readonly int OwnProcessId = Process.GetCurrentProcess().Id;
+
         public static ActionOutcome Execute(AudioActionKind kind, int step)
         {
             ActionOutcome outcome = new ActionOutcome();
@@ -109,26 +202,17 @@ namespace GameAudioKeys
                 return Fail(outcome, "활성 창을 찾지 못해 실행하지 않았습니다.");
             }
 
-            if (foregroundPid == Process.GetCurrentProcess().Id)
+            if (foregroundPid == OwnProcessId)
             {
                 return Fail(outcome, "이 앱의 창이 활성 상태여서 실행하지 않았습니다.");
             }
 
-            ProcTable table;
-            try
-            {
-                table = ProcTable.Snapshot();
-            }
-            catch (Exception ex)
-            {
-                return Fail(outcome, "프로세스 목록을 읽지 못했습니다: " + ex.Message);
-            }
-
+            // 세션은 매 동작마다 새로 열거한다(캐시 없음). 대상 판정에 필요한 값만 읽는다.
             List<EndpointInfo> endpoints;
             List<AudioSession> sessions;
             try
             {
-                sessions = Audio.EnumerateAll(out endpoints);
+                sessions = Audio.EnumerateAll(out endpoints, false);
             }
             catch (Exception ex)
             {
@@ -137,7 +221,40 @@ namespace GameAudioKeys
 
             try
             {
-                string processName = GetProcessName(table, foregroundPid);
+                // 같은 실행 파일의 자식 프로세스 세션(예: 브라우저 오디오 프로세스)이
+                // 있을 때만 전체 스냅샷으로 조상·생성 시각을 검증한다. 그 외에는 빈 표로
+                // 판정해도 활성 PID 세션만 선택되므로 결과가 동일하다.
+                Dictionary<int, string> paths = new Dictionary<int, string>();
+                Func<int, string> pathOf = delegate(int pid)
+                {
+                    string cached;
+                    if (!paths.TryGetValue(pid, out cached))
+                    {
+                        cached = ProcessImage.TryGetPath(pid);
+                        paths[pid] = cached;
+                    }
+
+                    return cached;
+                };
+
+                ProcTable table;
+                if (TargetPrefilter.NeedsAncestry(foregroundPid, sessions, pathOf))
+                {
+                    try
+                    {
+                        table = ProcTable.Snapshot();
+                    }
+                    catch (Exception ex)
+                    {
+                        return Fail(outcome, "프로세스 목록을 읽지 못했습니다: " + ex.Message);
+                    }
+                }
+                else
+                {
+                    table = new ProcTable();
+                }
+
+                string processName = GetProcessName(table, foregroundPid, pathOf);
                 outcome.TargetPid = foregroundPid;
                 outcome.TargetProcessName = processName;
 
@@ -365,12 +482,30 @@ namespace GameAudioKeys
             return firstFailure;
         }
 
-        private static string GetProcessName(ProcTable table, int pid)
+        private static string GetProcessName(ProcTable table, int pid, Func<int, string> pathOf)
         {
             ProcEntry entry;
             if (table != null && table.TryGet(pid, out entry) && !string.IsNullOrEmpty(entry.ExeName))
             {
                 return entry.ExeName;
+            }
+
+            // 스냅샷을 만들지 않은 경우 경로에서 실행 파일 이름만 꺼낸다.
+            string path = pathOf != null ? pathOf(pid) : null;
+            if (!string.IsNullOrEmpty(path))
+            {
+                try
+                {
+                    string name = System.IO.Path.GetFileName(path);
+                    if (!string.IsNullOrEmpty(name))
+                    {
+                        return name;
+                    }
+                }
+                catch (ArgumentException)
+                {
+                    // 비정상 경로 문자는 PID 표기로 대체한다.
+                }
             }
 
             return "PID " + pid.ToString(CultureInfo.InvariantCulture);

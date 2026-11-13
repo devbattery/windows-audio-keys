@@ -1106,6 +1106,15 @@ namespace GameAudioKeys.Core
     {
         public static List<AudioSession> EnumerateAll(out List<EndpointInfo> endpoints)
         {
+            return EnumerateAll(out endpoints, true);
+        }
+
+        // readValues=false: 앱의 단축키 경로용 경량 열거. 대상 판정에 필요한 PID·상태·
+        // 교차 프로세스·시스템 사운드 여부만 읽고, 음소거·볼륨·인스턴스 ID는 선택된
+        // 세션에 대해 TryRefreshOriginals가 쓰기 직전에 다시 읽으므로 생략한다.
+        // probe 진단은 기존 오버로드(readValues=true)를 그대로 사용한다.
+        public static List<AudioSession> EnumerateAll(out List<EndpointInfo> endpoints, bool readValues)
+        {
             endpoints = new List<EndpointInfo>();
             List<AudioSession> all = new List<AudioSession>();
 
@@ -1151,7 +1160,7 @@ namespace GameAudioKeys.Core
                                 endpoint.AddError("IMMDevice.GetId failed: 0x" + hr.ToString("X8", CultureInfo.InvariantCulture));
                             }
 
-                            EnumerateEndpoint(device, endpoint);
+                            EnumerateEndpoint(device, endpoint, readValues);
                         }
                     }
                     catch (Exception ex)
@@ -1176,7 +1185,7 @@ namespace GameAudioKeys.Core
             return all;
         }
 
-        private static void EnumerateEndpoint(IMMDevice device, EndpointInfo endpoint)
+        private static void EnumerateEndpoint(IMMDevice device, EndpointInfo endpoint, bool readValues)
         {
             Guid iid = typeof(IAudioSessionManager2).GUID;
             IntPtr managerPointer;
@@ -1221,7 +1230,7 @@ namespace GameAudioKeys.Core
                             continue;
                         }
 
-                        AudioSession session = ReadSession(control, endpoint.DeviceId);
+                        AudioSession session = ReadSession(control, endpoint.DeviceId, readValues);
                         if (session == null)
                         {
                             endpoint.AddError("session " + i.ToString(CultureInfo.InvariantCulture) + " is not IAudioSessionControl2");
@@ -1261,7 +1270,7 @@ namespace GameAudioKeys.Core
             }
         }
 
-        private static AudioSession ReadSession(IAudioSessionControl control, string endpointId)
+        private static AudioSession ReadSession(IAudioSessionControl control, string endpointId, bool readValues)
         {
             IAudioSessionControl2 control2 = control as IAudioSessionControl2;
             if (control2 == null)
@@ -1314,6 +1323,18 @@ namespace GameAudioKeys.Core
             }
 
             session.SystemSounds = control2.IsSystemSoundsSession() == 0;
+
+            if (!readValues)
+            {
+                // 경량 열거: 값 필드는 읽지 않은 상태(ReadOk=false)로 남겨 두어,
+                // TryRefreshOriginals를 거치지 않으면 Eligibility가 변경을 거부한다.
+                if (errors.Count > 0)
+                {
+                    session.ReadError = string.Join("; ", errors.ToArray());
+                }
+
+                return session;
+            }
 
             string instanceId;
             hr = control2.GetSessionInstanceIdentifier(out instanceId);

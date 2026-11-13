@@ -71,6 +71,8 @@ namespace GameAudioKeys.Tests
             TestCorruptSettingsPreservedOnSave(temporaryDirectory);
             TestInvalidSettingsPreservedOnSave(temporaryDirectory);
             TestTargetSelection();
+            TestTargetPrefilter();
+            TestSettingsEquivalence();
             TestStartupCommandLine();
             TestStartupLaunchPolicy();
             TestStartupTaskDefinition();
@@ -446,6 +448,113 @@ namespace GameAudioKeys.Tests
                 && expired.MatchReason == "expired"
                 && otherExecutable.MatchReason == "different-executable",
                 "system/cross/expired/different-executable reasons");
+        }
+
+        // 스냅샷 지연 생성 판단: 같은 실행 파일 경로의 다른 PID 세션이 있을 때만 true
+        private static void TestTargetPrefilter()
+        {
+            Dictionary<int, string> paths = new Dictionary<int, string>();
+            paths[100] = @"C:\Game\game.exe";
+            paths[200] = @"C:\GAME\GAME.EXE";
+            paths[300] = @"C:\Chat\chat.exe";
+            List<int> lookups = new List<int>();
+            Func<int, string> pathOf = delegate(int pid)
+            {
+                lookups.Add(pid);
+                string path;
+                return paths.TryGetValue(pid, out path) ? path : null;
+            };
+
+            List<AudioSession> selfOnly = new List<AudioSession>();
+            selfOnly.Add(NewSession(100));
+            Check("prefilter-self-only",
+                !TargetPrefilter.NeedsAncestry(100, selfOnly, pathOf) && lookups.Count == 0,
+                "foreground PID sessions never need a snapshot or path lookup");
+
+            List<AudioSession> other = new List<AudioSession>();
+            other.Add(NewSession(100));
+            other.Add(NewSession(300));
+            Check("prefilter-different-executable",
+                !TargetPrefilter.NeedsAncestry(100, other, pathOf),
+                "an unrelated executable cannot be a target");
+
+            List<AudioSession> sameImage = new List<AudioSession>();
+            sameImage.Add(NewSession(300));
+            sameImage.Add(NewSession(200));
+            Check("prefilter-same-executable",
+                TargetPrefilter.NeedsAncestry(100, sameImage, pathOf),
+                "same image path (case-insensitive) requires ancestry verification");
+
+            List<AudioSession> unknownPath = new List<AudioSession>();
+            unknownPath.Add(NewSession(999));
+            Check("prefilter-unknown-session-path",
+                !TargetPrefilter.NeedsAncestry(100, unknownPath, pathOf),
+                "an unreadable session path fails SameExecutablePath anyway");
+
+            Check("prefilter-unknown-foreground-path",
+                !TargetPrefilter.NeedsAncestry(555, sameImage, pathOf),
+                "an unreadable foreground path means no descendant can match");
+
+            AudioSession system = NewSession(200);
+            system.SystemSounds = true;
+            AudioSession cross = NewSession(200);
+            cross.CrossProcess = true;
+            AudioSession expired = NewSession(200);
+            expired.State = 2;
+            AudioSession kernel = NewSession(4);
+            List<AudioSession> excluded = new List<AudioSession>();
+            excluded.Add(system);
+            excluded.Add(cross);
+            excluded.Add(expired);
+            excluded.Add(kernel);
+            Check("prefilter-excluded-sessions",
+                !TargetPrefilter.NeedsAncestry(100, excluded, pathOf),
+                "system/cross-process/expired/System PID sessions are never candidates");
+
+            Check("prefilter-null-input",
+                !TargetPrefilter.NeedsAncestry(100, null, pathOf)
+                && !TargetPrefilter.NeedsAncestry(0, sameImage, pathOf)
+                && !TargetPrefilter.NeedsAncestry(100, sameImage, null),
+                "null or invalid input never requests a snapshot");
+
+            // 판단 생략 시 결과 동등성: 빈 표에서도 활성 PID 세션만 선택된다.
+            List<AudioSession> mixed = new List<AudioSession>();
+            AudioSession direct = NewSession(100);
+            mixed.Add(direct);
+            mixed.Add(NewSession(300));
+            List<AudioSession> selected = Targeting.SelectSessions(new ProcTable(), 100, mixed);
+            Check("prefilter-empty-table-selects-self",
+                selected.Count == 1 && selected[0] == direct,
+                "without a snapshot only the foreground PID session is selected");
+        }
+
+        // 설정 창의 "저장하지 않은 변경 사항" 판단
+        private static void TestSettingsEquivalence()
+        {
+            AppSettings a = AppSettings.CreateDefaults();
+            AppSettings b = a.Clone();
+            Check("settings-equivalent-clone", AppSettings.AreEquivalent(a, b), "clone is equivalent");
+
+            b.Step = 6;
+            Check("settings-differs-step", !AppSettings.AreEquivalent(a, b), "step change is detected");
+
+            b = a.Clone();
+            b.Enabled = false;
+            Check("settings-differs-enabled", !AppSettings.AreEquivalent(a, b), "enabled change is detected");
+
+            b = a.Clone();
+            b.VolumeUp.Ctrl = true;
+            Check("settings-differs-modifier", !AppSettings.AreEquivalent(a, b), "modifier change is detected");
+
+            b = a.Clone();
+            b.Mute = null;
+            Check("settings-differs-missing-binding",
+                !AppSettings.AreEquivalent(a, b) && !AppSettings.AreEquivalent(b, a),
+                "missing binding differs in both directions");
+
+            Check("settings-null-handling",
+                AppSettings.AreEquivalent(null, null) && !AppSettings.AreEquivalent(a, null),
+                "null settings compare safely");
         }
 
         private static void TestStartupCommandLine()
