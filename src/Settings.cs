@@ -277,6 +277,15 @@ namespace GameAudioKeys
             return result;
         }
 
+        // 키 녹화 화면에서 조합 하나를 즉시 검사할 때 쓰는 공개 래퍼.
+        // 저장 시 검증과 같은 규칙(ValidateBinding)을 그대로 적용하고 첫 오류만 돌려준다.
+        public static string DescribeBindingProblem(HotkeyBinding binding)
+        {
+            SettingsValidation result = new SettingsValidation();
+            ValidateBinding(result, "선택한 조합", binding);
+            return result.Errors.Count > 0 ? result.Errors[0] : null;
+        }
+
         private static void CheckDuplicate(SettingsValidation result, Dictionary<string, string> seen, string slot, HotkeyBinding binding)
         {
             if (binding == null || !KeyCatalog.IsSupported(binding.Key))

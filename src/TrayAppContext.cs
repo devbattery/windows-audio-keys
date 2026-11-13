@@ -40,6 +40,9 @@ namespace GameAudioKeys
         private readonly Icon idleTrayIcon;
         private readonly Icon errorTrayIcon;
 
+        private const string ThemeOverrideEnvironment = "GAME_AUDIO_KEYS_THEME";
+        private readonly EventHandler themeChangedHandler;
+
         public TrayAppContext(
             SettingsLoadResult load,
             string settingsPath,
@@ -58,6 +61,23 @@ namespace GameAudioKeys
             {
                 throw new InvalidOperationException("자동 시작 상태 알림용 UI 핸들을 만들지 못했습니다.");
             }
+
+            // 테마: 테스트 설정 폴더 실행에서만 환경 변수로 라이트/다크를 강제할 수 있다.
+            // 그 외에는 Windows 앱 테마를 따르고, 실행 중 바뀌면 설정 창을 다시 칠한다.
+            if (settingsOverridden)
+            {
+                ThemeManager.SetTestOverride(Environment.GetEnvironmentVariable(ThemeOverrideEnvironment));
+            }
+
+            this.themeChangedHandler = delegate
+            {
+                if (!this.exiting && this.form != null)
+                {
+                    this.form.ApplyTheme();
+                }
+            };
+            ThemeManager.ThemeChanged += this.themeChangedHandler;
+            ThemeManager.StartWatching();
 
             this.form = new MainForm(this);
             this.form.LoadSettingsIntoControls(this.settings);
@@ -513,6 +533,23 @@ namespace GameAudioKeys
             }
         }
 
+        // 설정 창 헤더 스위치: 트레이의 일시정지/다시 시작과 같은 경로로 즉시 적용한다.
+        // 다시 시작이 등록 검증에서 실패하면 스위치를 실제 상태로 되돌린다.
+        public void SetHotkeysEnabled(bool enabled)
+        {
+            if (this.exiting)
+            {
+                return;
+            }
+
+            if (enabled != this.settings.Enabled)
+            {
+                this.TogglePause();
+            }
+
+            this.form.SetEnabledState(this.settings.Enabled);
+        }
+
         private void TogglePause()
         {
             if (this.exiting)
@@ -526,7 +563,7 @@ namespace GameAudioKeys
                 // persistence is best effort: a failed write must not leave keys reserved.
                 this.settings.Enabled = false;
                 this.UpdateHotkeyLifecycle();
-                this.form.LoadSettingsIntoControls(this.settings);
+                this.form.SetEnabledState(this.settings.Enabled);
                 this.UpdateStatusIndicators();
 
                 string pauseError;
@@ -597,7 +634,7 @@ namespace GameAudioKeys
                     string rollbackError;
                     bool rollbackSaved = SettingsStore.TrySave(this.settingsPath, this.settings, out rollbackError);
                     this.registrationError = applyError;
-                    this.form.LoadSettingsIntoControls(this.settings);
+                    this.form.SetEnabledState(this.settings.Enabled);
                     string message = "단축키를 다시 시작하지 못해 일시정지 상태를 유지합니다: " + applyError;
                     if (!rollbackSaved)
                     {
@@ -610,7 +647,7 @@ namespace GameAudioKeys
                 }
             }
 
-            this.form.LoadSettingsIntoControls(this.settings);
+            this.form.SetEnabledState(this.settings.Enabled);
             this.UpdateHotkeyLifecycle();
             this.UpdateStatusIndicators();
             this.form.SetLastAction("단축키를 다시 시작했습니다.", false);
@@ -713,11 +750,8 @@ namespace GameAudioKeys
                 return;
             }
 
-            string label;
-            Color textColor, fill, dot;
-            UiTheme.Describe(state, out label, out textColor, out fill, out dot);
             string text = StartupConstants.ProductName + " - "
-                + (state == RuntimeState.Error ? "포커스 감시 오류" : label);
+                + (state == RuntimeState.Error ? "포커스 감시 오류" : UiTheme.StateLabel(state));
 
             if (text.Length > 63)
             {
@@ -760,6 +794,10 @@ namespace GameAudioKeys
             }
 
             this.exiting = true;
+
+            // SystemEvents는 정적 이벤트라 구독을 해제하지 않으면 종료 후에도 참조가 남는다.
+            ThemeManager.ThemeChanged -= this.themeChangedHandler;
+            ThemeManager.StopWatching();
 
             if (this.foregroundHook != IntPtr.Zero)
             {

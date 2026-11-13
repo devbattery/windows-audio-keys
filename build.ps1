@@ -43,6 +43,8 @@ $startupService = Join-Path $projectRoot 'src\StartupTaskService.cs'
 $mainForm = Join-Path $projectRoot 'src\MainForm.cs'
 $uiTheme = Join-Path $projectRoot 'src\UiTheme.cs'
 $appIcons = Join-Path $projectRoot 'src\AppIcons.cs'
+$modernControls = Join-Path $projectRoot 'src\ModernControls.cs'
+$keyCapture = Join-Path $projectRoot 'src\KeyCapture.cs'
 $trayContext = Join-Path $projectRoot 'src\TrayAppContext.cs'
 $program = Join-Path $projectRoot 'src\Program.cs'
 $appConfig = Join-Path $projectRoot 'src\app.config'
@@ -69,6 +71,8 @@ $required = @(
     $mainForm
     $uiTheme
     $appIcons
+    $modernControls
+    $keyCapture
     $trayContext
     $program
     $appConfig
@@ -137,6 +141,8 @@ Invoke-Compiler -Description 'Application build' -Arguments ($common + @(
     $startup
     $uiTheme
     $appIcons
+    $modernControls
+    $keyCapture
     $mainForm
     $trayContext
     $startupService
@@ -149,6 +155,7 @@ $testOutput = Join-Path $outputDir 'GameAudioKeys.Tests.exe'
 Invoke-Compiler -Description 'Test build' -Arguments ($common + @(
     '/target:exe'
     '/r:' + $winForms
+    '/r:' + $drawing
     '/r:' + $webExtensions
     '/out:' + $testOutput
     $core
@@ -156,6 +163,8 @@ Invoke-Compiler -Description 'Test build' -Arguments ($common + @(
     $appLogic
     $startup
     $startupService
+    $uiTheme
+    $keyCapture
     $tests
 ))
 

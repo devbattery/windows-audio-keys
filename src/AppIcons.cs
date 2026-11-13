@@ -13,6 +13,9 @@ namespace GameAudioKeys
         [DllImport("user32.dll", SetLastError = true)]
         private static extern bool DestroyIcon(IntPtr handle);
 
+        // 아이콘 타일 기본 강조색(작업 표시줄이 밝든 어둡든 보이도록 진한 파랑)
+        public static readonly Color Accent = Color.FromArgb(0, 95, 184);
+
         // 상태별 타일 색: 사용 중·설정 창 활성은 강조색, 일시정지·대기는 회색, 충돌·오류는 빨강
         public static Color TileColorFor(RuntimeState state)
         {
@@ -20,10 +23,10 @@ namespace GameAudioKeys
             {
                 case RuntimeState.Active:
                 case RuntimeState.Suspended:
-                    return UiTheme.Accent;
+                    return Accent;
                 case RuntimeState.Conflict:
                 case RuntimeState.Error:
-                    return UiTheme.ErrorText;
+                    return Color.FromArgb(196, 43, 28);
                 default:
                     return Color.FromArgb(112, 112, 112);
             }

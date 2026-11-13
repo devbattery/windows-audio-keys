@@ -639,8 +639,8 @@ namespace GameAudioKeys
                 mismatch.CheckboxKnown = true;
                 mismatch.CheckboxChecked = snapshot.TaskEnabled;
                 mismatch.MessageKo = pathChanged
-                    ? "등록 갱신 필요 - 이전 위치나 구성을 가리키는 자동 시작 작업이 남아 있습니다. '자동 시작 적용'을 눌러 현재 위치로 갱신하세요. (" + detail + ")"
-                    : "다시 적용 필요 - 소유한 자동 시작 작업의 구성이 현재 버전과 다릅니다. '자동 시작 적용'으로 다시 등록하세요. (" + detail + ")";
+                    ? "등록 갱신 필요 - 이전 위치나 구성을 가리키는 자동 시작 작업이 남아 있습니다. '다시 등록'을 눌러 현재 위치로 갱신하세요. (" + detail + ")"
+                    : "다시 적용 필요 - 소유한 자동 시작 작업의 구성이 현재 버전과 다릅니다. '다시 등록'을 눌러 다시 등록하세요. (" + detail + ")";
                 return mismatch;
             }
 
@@ -655,7 +655,7 @@ namespace GameAudioKeys
             else
             {
                 owned.Kind = StartupTaskStateKind.Disabled;
-                owned.MessageKo = "꺼짐 - 이 앱의 자동 시작 작업이 있지만 사용 안 함 상태입니다. ('자동 시작 적용'으로 다시 켤 수 있습니다)";
+                owned.MessageKo = "꺼짐 - 이 앱의 자동 시작 작업이 있지만 사용 안 함 상태입니다. (자동 시작 스위치로 다시 켤 수 있습니다)";
             }
 
             return owned;

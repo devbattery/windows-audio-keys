@@ -73,6 +73,8 @@ namespace GameAudioKeys.Tests
             TestTargetSelection();
             TestTargetPrefilter();
             TestSettingsEquivalence();
+            TestKeyCapture();
+            TestThemeResolution();
             TestStartupCommandLine();
             TestStartupLaunchPolicy();
             TestStartupTaskDefinition();
@@ -555,6 +557,79 @@ namespace GameAudioKeys.Tests
             Check("settings-null-handling",
                 AppSettings.AreEquivalent(null, null) && !AppSettings.AreEquivalent(a, null),
                 "null settings compare safely");
+        }
+
+        // 키 녹화: 키 입력 → 조합 완성/대기/거부 판정
+        private static void TestKeyCapture()
+        {
+            KeyCaptureResult delete = KeyCapture.Evaluate(System.Windows.Forms.Keys.Delete);
+            Check("capture-bare-delete",
+                delete.Kind == KeyCaptureKind.Complete && delete.Binding.Key == 0x2E
+                && !delete.Binding.Ctrl && !delete.Binding.Alt && !delete.Binding.Shift,
+                "bare Delete completes");
+
+            KeyCaptureResult combo = KeyCapture.Evaluate(
+                System.Windows.Forms.Keys.PageDown | System.Windows.Forms.Keys.Control | System.Windows.Forms.Keys.Shift);
+            Check("capture-ctrl-shift-pagedown",
+                combo.Kind == KeyCaptureKind.Complete && combo.Binding.Key == 0x22
+                && combo.Binding.Ctrl && combo.Binding.Shift && !combo.Binding.Alt,
+                "Ctrl+Shift+Page Down completes with modifiers");
+
+            KeyCaptureResult modifierOnly = KeyCapture.Evaluate(
+                System.Windows.Forms.Keys.ControlKey | System.Windows.Forms.Keys.Control);
+            Check("capture-modifier-pending",
+                modifierOnly.Kind == KeyCaptureKind.Pending && modifierOnly.Binding == null,
+                "a modifier alone keeps waiting");
+
+            KeyCaptureResult f12 = KeyCapture.Evaluate(System.Windows.Forms.Keys.F12);
+            Check("capture-f12-rejected",
+                f12.Kind == KeyCaptureKind.Rejected && f12.MessageKo != null && f12.MessageKo.Contains("F12"),
+                "F12 is rejected with the reserved-key reason");
+
+            KeyCaptureResult tab = KeyCapture.Evaluate(System.Windows.Forms.Keys.Tab);
+            Check("capture-unsupported-rejected",
+                tab.Kind == KeyCaptureKind.Rejected && tab.Binding == null && !string.IsNullOrEmpty(tab.MessageKo),
+                "unsupported keys are rejected");
+
+            KeyCaptureResult shiftEscape = KeyCapture.Evaluate(System.Windows.Forms.Keys.Escape | System.Windows.Forms.Keys.Shift);
+            Check("capture-unsupported-friendly-message",
+                shiftEscape.Kind == KeyCaptureKind.Rejected && !shiftEscape.MessageKo.Contains("VK"),
+                "unsupported keys never show raw virtual-key numbers");
+
+            KeyCaptureResult altTab = KeyCapture.Evaluate(System.Windows.Forms.Keys.Tab | System.Windows.Forms.Keys.Alt);
+            Check("capture-alt-tab-reserved",
+                altTab.Kind == KeyCaptureKind.Rejected && altTab.MessageKo.Contains("Alt+Tab"),
+                "Alt+Tab keeps the specific reserved reason");
+
+            KeyCaptureResult windows = KeyCapture.Evaluate(System.Windows.Forms.Keys.LWin);
+            Check("capture-windows-key-rejected",
+                windows.Kind == KeyCaptureKind.Rejected && windows.MessageKo.Contains("Windows"),
+                "Windows key combinations are rejected");
+
+            KeyCaptureResult cad = KeyCapture.Evaluate(
+                System.Windows.Forms.Keys.Delete | System.Windows.Forms.Keys.Control | System.Windows.Forms.Keys.Alt);
+            Check("capture-ctrl-alt-delete-rejected",
+                cad.Kind == KeyCaptureKind.Rejected && cad.MessageKo.Contains("Ctrl+Alt+Delete"),
+                "Ctrl+Alt+Delete is reported as reserved");
+
+            KeyCaptureResult altF4 = KeyCapture.Evaluate(System.Windows.Forms.Keys.F4 | System.Windows.Forms.Keys.Alt);
+            Check("capture-alt-f4-rejected",
+                altF4.Kind == KeyCaptureKind.Rejected && altF4.MessageKo.Contains("Alt+F4"),
+                "Alt+F4 is reported as reserved");
+
+            Check("capture-pending-text",
+                KeyCapture.DescribePending(System.Windows.Forms.Keys.Control | System.Windows.Forms.Keys.Alt) == "Ctrl + Alt + …"
+                && KeyCapture.DescribePending(System.Windows.Forms.Keys.None) == null,
+                "pending modifier text");
+        }
+
+        // Windows 앱 테마 레지스트리 값 해석
+        private static void TestThemeResolution()
+        {
+            Check("theme-dark-when-zero", ThemeManager.ResolveDark(0), "AppsUseLightTheme=0 means dark");
+            Check("theme-light-when-one", !ThemeManager.ResolveDark(1), "AppsUseLightTheme=1 means light");
+            Check("theme-light-when-missing", !ThemeManager.ResolveDark(null), "missing value falls back to light");
+            Check("theme-light-when-malformed", !ThemeManager.ResolveDark("0"), "non-DWORD value falls back to light");
         }
 
         private static void TestStartupCommandLine()
