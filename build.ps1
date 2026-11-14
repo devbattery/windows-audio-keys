@@ -39,6 +39,10 @@ $outputDir = Join-Path $projectRoot 'bin'
 
 $core = Join-Path $projectRoot 'src\CoreAudio.cs'
 $assemblyInfo = Join-Path $projectRoot 'src\AssemblyInfo.cs'
+# Declares .NET Framework 4.8 as the target. Without it csc.exe output runs with
+# pre-4.5 compatibility quirks and WinForms ignores DpiAwareness=PerMonitorV2.
+# The app and the tests both compile it so tests run under the same quirks.
+$targetFramework = Join-Path $projectRoot 'src\TargetFramework.cs'
 $settings = Join-Path $projectRoot 'src\Settings.cs'
 $appLogic = Join-Path $projectRoot 'src\AppLogic.cs'
 $hotkeys = Join-Path $projectRoot 'src\HotkeyManager.cs'
@@ -71,6 +75,7 @@ $required = @(
     $drawing
     $core
     $assemblyInfo
+    $targetFramework
     $settings
     $appLogic
     $hotkeys
@@ -147,6 +152,7 @@ Invoke-Compiler -Description 'Application build' -Arguments ($common + @(
     '/out:' + $appOutput
     $core
     $assemblyInfo
+    $targetFramework
     $settings
     $appLogic
     $hotkeys
@@ -173,6 +179,7 @@ Invoke-Compiler -Description 'Test build' -Arguments ($common + @(
     '/r:' + $drawing
     '/r:' + $webExtensions
     '/out:' + $testOutput
+    $targetFramework
     $core
     $settings
     $appLogic

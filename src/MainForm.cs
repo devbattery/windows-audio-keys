@@ -23,6 +23,9 @@ namespace GameAudioKeys
     {
         private const string HeroSuffix = " · 활성 창의 앱 소리만 조절합니다";
 
+        // 96 DPI(100%) 기준 최소 크기. 표시할 때와 모니터 DPI가 바뀔 때 현재 DPI로 환산한다.
+        private static readonly Size LogicalMinimumSize = new Size(700, 520);
+
         private readonly TrayAppContext context;
         private readonly Icon windowIcon;
 
@@ -75,7 +78,7 @@ namespace GameAudioKeys
             this.Text = StartupConstants.ProductName + " " + Application.ProductVersion + " - 설정";
             this.StartPosition = FormStartPosition.CenterScreen;
             this.ClientSize = new Size(720, 800);
-            this.MinimumSize = new Size(700, 520);
+            this.MinimumSize = LogicalMinimumSize;
             this.Font = UiTheme.BodyFont();
             this.windowIcon = AppIcons.Create(AppIcons.Accent, 32);
             this.Icon = this.windowIcon;
@@ -443,19 +446,76 @@ namespace GameAudioKeys
         }
 
         // 고배율(예: 1080p 150%)에서는 기본 크기가 작업 영역보다 클 수 있다. 제목 표시줄과
-        // 하단 버튼이 화면 밖으로 나가지 않도록 처음 표시할 때 작업 영역 안으로 줄인다.
+        // 하단 버튼이 화면 밖으로 나가지 않도록 처음 표시할 때 작업 영역 안으로 줄여 가운데 둔다.
         protected override void OnLoad(EventArgs e)
         {
             base.OnLoad(e);
+            this.FitToWorkingArea(this.DeviceDpi, true, false);
+        }
+
+        // 배율이 다른 모니터로 옮기면 WinForms(PerMonitorV2)가 창·글꼴·컨트롤을 새 DPI로 다시
+        // 배치한다. 그 결과 창이 새 화면보다 커질 수 있으므로 작업 영역 안으로 줄인다.
+        // 마우스로 끄는 중에는 위치를 옮기지 않는다(끌기와 충돌하지 않게). 끌기를 마치면 사용자가 놓은 자리다.
+        protected override void OnDpiChanged(DpiChangedEventArgs e)
+        {
+            base.OnDpiChanged(e);
+            bool dragging = (Control.MouseButtons & MouseButtons.Left) != 0;
+            this.FitToWorkingArea(e.DeviceDpiNew, false, !dragging);
+        }
+
+        // 최소 크기(96 DPI 기준 700x520)를 지정 DPI로 환산하되 작업 영역을 넘지 않게 하고,
+        // 창이 작업 영역보다 크면 줄인다. center=true면 작업 영역 가운데로, keepInside=true면
+        // 아래·오른쪽이 넘치지 않게 위치를 옮긴다.
+        private void FitToWorkingArea(int dpi, bool center, bool keepInside)
+        {
             Rectangle area = Screen.FromControl(this).WorkingArea;
-            int width = Math.Min(this.Width, area.Width);
-            int height = Math.Min(this.Height, area.Height);
-            if (width != this.Width || height != this.Height)
+            Size minimum = new Size(
+                LogicalMinimumSize.Width * dpi / 96,
+                LogicalMinimumSize.Height * dpi / 96);
+            minimum = new Size(Math.Min(minimum.Width, area.Width), Math.Min(minimum.Height, area.Height));
+            if (this.MinimumSize != minimum)
             {
-                this.Size = new Size(width, height);
-                this.Location = new Point(
+                this.MinimumSize = minimum;
+            }
+
+            if (this.WindowState != FormWindowState.Normal)
+            {
+                return;
+            }
+
+            Rectangle bounds = this.Bounds;
+            int width = Math.Min(bounds.Width, area.Width);
+            int height = Math.Min(bounds.Height, area.Height);
+            Rectangle fitted;
+            if (center)
+            {
+                if (width == bounds.Width && height == bounds.Height)
+                {
+                    return;
+                }
+
+                fitted = new Rectangle(
                     area.Left + (area.Width - width) / 2,
-                    area.Top + (area.Height - height) / 2);
+                    area.Top + (area.Height - height) / 2,
+                    width,
+                    height);
+            }
+            else if (keepInside)
+            {
+                fitted = new Rectangle(
+                    Math.Max(area.Left, Math.Min(bounds.Left, area.Right - width)),
+                    Math.Max(area.Top, Math.Min(bounds.Top, area.Bottom - height)),
+                    width,
+                    height);
+            }
+            else
+            {
+                fitted = new Rectangle(bounds.Location, new Size(width, height));
+            }
+
+            if (fitted != bounds)
+            {
+                this.Bounds = fitted;
             }
         }
 
@@ -1078,7 +1138,8 @@ namespace GameAudioKeys
             for (int i = 0; i < this.wrapTargets.Count; i++)
             {
                 WrapTarget target = this.wrapTargets[i];
-                int width = Math.Max(160, content - target.Reserved());
+                // 최소 폭 160은 96 DPI 기준 값이라 현재 모니터 DPI로 환산한다.
+                int width = Math.Max(this.LogicalToDeviceUnits(160), content - target.Reserved());
                 if (target.Label.MaximumSize.Width != width)
                 {
                     target.Label.MaximumSize = new Size(width, 0);
