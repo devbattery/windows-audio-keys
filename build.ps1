@@ -14,6 +14,9 @@
       WindowsAudioKeys.exe
       WindowsAudioKeys.exe.config
 
+    The product version lives in src\AssemblyInfo.cs; that single file is the only
+    place to change it for a release.
+
     The build never stops running instances: if WindowsAudioKeys.exe is running,
     the build stops with an instruction to close it from the tray menu first.
 
@@ -35,6 +38,7 @@ $drawing = Join-Path $frameworkDir 'System.Drawing.dll'
 $outputDir = Join-Path $projectRoot 'bin'
 
 $core = Join-Path $projectRoot 'src\CoreAudio.cs'
+$assemblyInfo = Join-Path $projectRoot 'src\AssemblyInfo.cs'
 $settings = Join-Path $projectRoot 'src\Settings.cs'
 $appLogic = Join-Path $projectRoot 'src\AppLogic.cs'
 $hotkeys = Join-Path $projectRoot 'src\HotkeyManager.cs'
@@ -63,6 +67,7 @@ $required = @(
     $winForms
     $drawing
     $core
+    $assemblyInfo
     $settings
     $appLogic
     $hotkeys
@@ -135,6 +140,7 @@ Invoke-Compiler -Description 'Application build' -Arguments ($common + @(
     '/r:' + $webExtensions
     '/out:' + $appOutput
     $core
+    $assemblyInfo
     $settings
     $appLogic
     $hotkeys

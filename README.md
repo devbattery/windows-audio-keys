@@ -10,18 +10,39 @@ Windows 11 트레이 유틸리티입니다. 프로그램을 미리 등록할 필
 - 별도 드라이버나 대상 프로세스 수정 없이 동작합니다.
 - Windows Core Audio API를 프로세스 외부에서 호출합니다.
 
+## 내려받기
+
+1. [최신 릴리스 페이지](https://github.com/devbattery/windows-audio-keys/releases/latest)에서
+   `WindowsAudioKeys-v<버전>.zip`을 내려받습니다.
+2. (선택) 함께 올라간 `WindowsAudioKeys-v<버전>.zip.sha256` 값과 내려받은 파일의
+   해시가 같은지 확인합니다.
+
+   ```powershell
+   Get-FileHash .\WindowsAudioKeys-v1.0.0.zip -Algorithm SHA256
+   ```
+
+3. ZIP을 원하는 폴더(예: `%LOCALAPPDATA%\Programs\WindowsAudioKeys`)에 풉니다.
+   압축 안의 `WindowsAudioKeys.exe`, `WindowsAudioKeys.exe.config`, `README.md`,
+   `CHANGELOG.md`, `LICENSE`가 한 폴더에 놓입니다.
+
+변경 내역은 [CHANGELOG.md](CHANGELOG.md)에 있습니다. 실행 중인 버전은 설정 창
+제목이나 `WindowsAudioKeys.exe` 파일 속성의 **자세히** 탭에서 확인할 수 있습니다.
+
 ## 실행
 
-1. 내려받은 폴더에서 **`WindowsAudioKeys.exe`를 두 번 클릭**합니다.
+1. 압축을 푼 폴더에서 **`WindowsAudioKeys.exe`를 두 번 클릭**합니다.
 2. `WindowsAudioKeys.exe.config`는 같은 폴더에 함께 두어야 합니다. 설치 프로그램은
    없으며, 이 두 파일만 있으면 바로 실행됩니다.
 
-> 이 배포본은 코드 서명이 없습니다. 신뢰할 수 있는 서명을 요구하는 시스템 정책에서는
+> 이 배포본은 코드 서명이 없습니다. 인터넷에서 받은 파일이므로 처음 실행할 때
+> Windows SmartScreen 경고가 표시될 수 있습니다. 공식 릴리스 페이지에서 받은
+> 파일인지와 SHA-256 값을 확인한 뒤 실행 여부를 결정하세요.
+> 신뢰할 수 있는 서명을 요구하는 시스템 정책에서는
 > 실행이 차단될 수 있습니다. 차단되면 실행을 중단하고, 해당 정책이 허용하는 정식
 > 서명 빌드를 사용하세요. 보안 정책을 바꾸거나 차단을 우회하는 방법은 사용하지
 > 마세요.
 
-- Windows 11과 .NET Framework 4.8이 필요합니다.
+- Windows 11과 .NET Framework 4.8 이상이 필요합니다(Windows 11에 기본 포함).
 - 일반 실행에는 저장된 설정이 있어도 설정 창이 열립니다. 로그인 자동 시작
   모드(`--startup`)에서만 트레이에 조용히 머뭅니다. 설정 창이 활성 상태인 동안에는
   전역 단축키가 잠시 해제되어 키를 편하게 고를 수 있습니다.
@@ -39,6 +60,13 @@ Windows 11 트레이 유틸리티입니다. 프로그램을 미리 등록할 필
   스위치 옆에 나타나는 **다시 등록**을 눌러 현재 위치로 갱신해야 합니다.
 - 설정 파일은 실행 파일 위치와 무관하게 `%LOCALAPPDATA%\GameAudioKeys`에 보관되므로
   앱 폴더를 옮겨도 기존 오디오 단축키 설정은 유지됩니다.
+
+새 버전으로 업데이트하는 방법:
+
+1. 설정 창의 **종료** 또는 트레이 메뉴의 **종료**로 실행 중인 앱을 완전히 끝냅니다.
+2. 새 ZIP의 파일을 **기존과 같은 폴더**에 덮어씁니다. 같은 폴더를 쓰면 로그인 자동
+   시작 작업을 다시 등록하지 않아도 됩니다.
+3. `WindowsAudioKeys.exe`를 실행하고 설정 창 제목에서 새 버전을 확인합니다.
 
 ### 실행 권한
 
@@ -216,7 +244,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Test
 ```
 
 - `AudioProbe.exe --self-test`: 진단 프로브의 26개 순수 로직 검증.
-- `GameAudioKeys.Tests.exe`: 178개 검증. 기본값, 볼륨 클램프와 경계, 다중 세션
+- `GameAudioKeys.Tests.exe`: 180개 검증. 기본값, 볼륨 클램프와 경계, 다중 세션
   토글 결정, 중복/예약/잘못된 단축키, 설정 왕복, 손상/무효 설정 보존, 저장 시
   `.invalid-*.bak` 보존, 공유 대상 선택 로직, 프로세스 스냅샷 생략 판단,
   미저장 변경 감지, 키 녹화 판정, 테마 값 해석에 더해 자동 시작 인수 조합,
@@ -228,6 +256,34 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Test
   작업을 등록·수정·삭제하지는 않습니다.
 - `AudioProbe.exe --list`는 읽기 전용 세션 진단입니다. 실제 오디오를 변경하지
   않습니다.
+
+### 릴리스 패키지 만들기
+
+버전은 `src\AssemblyInfo.cs` 한 곳에서만 관리합니다. `AssemblyInformationalVersion`은
+`1.2.3` 형식으로, `AssemblyVersion`·`AssemblyFileVersion`은 같은 값 뒤에 `.0`을 붙여
+씁니다.
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\package.ps1
+```
+
+`package.ps1`은 다음 순서로 진행합니다.
+
+1. `build.ps1 -Test`를 실행합니다. 빌드나 테스트가 실패하면 중단합니다.
+2. 빌드된 exe의 버전을 읽고 세 버전 값이 서로 맞는지, 루트 배포본이 방금 빌드한
+   파일과 같은지, `CHANGELOG.md`에 그 버전 항목(`## [<버전>]`)이 있는지 확인합니다.
+3. `dist\WindowsAudioKeys-v<버전>.zip`과 `dist\WindowsAudioKeys-v<버전>.zip.sha256`을
+   만듭니다. `dist`는 커밋하지 않습니다.
+
+릴리스 절차:
+
+1. `src\AssemblyInfo.cs`의 버전을 올리고 `CHANGELOG.md`에 항목을 추가합니다.
+2. `package.ps1`을 실행합니다.
+3. 버전 변경과 다시 빌드된 루트 `WindowsAudioKeys.exe` / `.config`를 커밋하고
+   `main`에 push합니다.
+4. GitHub에서 그 커밋에 `v<버전>` 태그로 릴리스를 만들고, `dist`의 ZIP과
+   `.sha256` 파일을 첨부합니다. 릴리스 본문에는 `CHANGELOG.md`의 해당 항목을
+   사용합니다.
 
 ### 무음 오디오 픽스처 (테스트 전용)
 
@@ -290,3 +346,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Test
 - **자동 시작을 변경할 수 없음**: 같은 이름의 작업이 다른 프로그램/사용자 소유이거나,
   테스트 설정 폴더를 사용 중이거나, 관리자 승인이 취소된 경우입니다. 화면의
   안내를 확인하고 일반 실행에서 다시 시도하세요.
+
+## 라이선스
+
+[MIT License](LICENSE)로 배포합니다.

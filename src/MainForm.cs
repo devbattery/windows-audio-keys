@@ -58,7 +58,7 @@ namespace GameAudioKeys
             this.SuspendLayout();
             this.AutoScaleDimensions = new SizeF(96F, 96F);
             this.AutoScaleMode = AutoScaleMode.Dpi;
-            this.Text = StartupConstants.ProductName + " - 설정";
+            this.Text = StartupConstants.ProductName + " " + Application.ProductVersion + " - 설정";
             this.StartPosition = FormStartPosition.CenterScreen;
             this.ClientSize = new Size(720, 800);
             this.MinimumSize = new Size(700, 520);
