@@ -58,6 +58,7 @@ namespace GameAudioKeys.Tests
 
         private static void Run(string temporaryDirectory)
         {
+            TestTargetFramework();
             TestDefaults();
             TestVolume();
             TestToggleDecision();
@@ -310,6 +311,39 @@ namespace GameAudioKeys.Tests
                 check = InstallLocation.Evaluate(unresolved[i], roots, FakeSecurity(SafeTree()));
                 Check("install-eval-unresolved-" + i.ToString(CultureInfo.InvariantCulture), !check.Safe, unresolved[i]);
             }
+
+            // 4.8 대상의 새 경로 정규화(UseLegacyPathHandling=false)에서도 상위 폴더 탈출·
+            // 대체 데이터 스트림·장치 경로는 안전한 설치로 인정하지 않는다.
+            string[] tricky =
+            {
+                @"C:\Program Files\Vendor\WAK\..\..\..\Users\me\WindowsAudioKeys.exe",
+                @"C:\Program Files\Vendor\WAK\WindowsAudioKeys.exe:evil",
+                @"C:\Program Files\Vendor\WAK\WindowsAudioKeys.exe::$DATA",
+                @"\\?\C:\Program Files\Vendor\WAK\WindowsAudioKeys.exe",
+                @"\\.\C:\Program Files\Vendor\WAK\WindowsAudioKeys.exe"
+            };
+            for (int i = 0; i < tricky.Length; i++)
+            {
+                check = InstallLocation.Evaluate(tricky[i], roots, FakeSecurity(SafeTree()));
+                Check("install-eval-normalize-" + i.ToString(CultureInfo.InvariantCulture), !check.Safe, tricky[i]);
+            }
+
+            // 같은 폴더 안의 "." 구간은 정규화 후 같은 안전한 경로로 본다(과도한 거부가 아님을 확인).
+            check = InstallLocation.Evaluate(@"C:\Program Files\Vendor\.\WAK\WindowsAudioKeys.exe", roots, FakeSecurity(SafeTree()));
+            Check("install-eval-normalize-dot", check.Safe, check.ReasonKo);
+        }
+
+        // 앱과 테스트는 src/TargetFramework.cs 로 .NET Framework 4.8 을 대상으로 선언한다.
+        // 선언이 빠지면 WinForms 고DPI(PerMonitorV2)와 4.5 이후 호환 동작이 모두 꺼진다.
+        private static void TestTargetFramework()
+        {
+            string name = AppDomain.CurrentDomain.SetupInformation.TargetFrameworkName;
+            Check("target-framework-4.8", name == ".NETFramework,Version=v4.8", name ?? "(없음)");
+
+            // 4.6.2 미만 대상이면 런타임이 이 스위치 기본값을 true 로 정의한다. 4.8 대상이면 정의되지 않거나 false.
+            bool legacyPaths;
+            bool found = AppContext.TryGetSwitch("Switch.System.IO.UseLegacyPathHandling", out legacyPaths);
+            Check("target-framework-modern-paths", !(found && legacyPaths), "legacy path handling is on");
         }
 
         // 실제 파일 시스템: 임시 폴더(사용자 소유)의 실행 파일은 항상 거부된다.

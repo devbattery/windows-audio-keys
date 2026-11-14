@@ -296,14 +296,14 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Test
 ```
 
 - `AudioProbe.exe --self-test`: 진단 프로브의 26개 순수 로직 검증.
-- `GameAudioKeys.Tests.exe`: 288개 검증. 기본값, 볼륨 클램프와 경계, 다중 세션
+- `GameAudioKeys.Tests.exe`: 296개 검증. 대상 프레임워크(.NET Framework 4.8) 선언, 기본값, 볼륨 클램프와 경계, 다중 세션
   토글 결정, 중복/예약/잘못된 단축키, 설정 왕복, 손상/무효 설정 보존, 저장 시
   `.invalid-*.bak` 보존, 공유 대상 선택 로직, 프로세스 스냅샷 생략 판단,
   미저장 변경 감지, 키 녹화 판정, 테마 값 해석에 더해 자동 시작 인수 조합,
   작업 XML의 사용자/권한/트리거/경로/이스케이프, 소유/외부 작업 구분,
   누락/읽기 실패 상태, 계정 이름/SID 정규화, 적용 계획, 릴리스 버전 해석·비교,
   GitHub 응답 해석, 릴리스 주소 허용 검사, 업데이트 자동 확인 설정, 자동 시작 설치
-  위치(Program Files·소유자·쓰기 권한·링크) 판정을 포함합니다.
+  위치(Program Files·소유자·쓰기 권한·링크·경로 정규화) 판정을 포함합니다.
 - 테스트는 실제 작업 스케줄러 작업을 등록하거나 관리자 권한을 요청하지 않습니다.
   한 번의 비변경 플랫폼 검사에서만 생성된 XML을 실제
   `Schedule.Service.NewTask(0).XmlText`에 할당해 파싱/타입 계약을 확인하며,
