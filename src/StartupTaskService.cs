@@ -98,9 +98,10 @@ namespace GameAudioKeys
                 {
                     task = folder.GetTask(taskName);
                 }
-                catch (COMException ex)
+                catch (Exception ex)
                 {
-                    if (ex.HResult == ErrorFileNotFound || ex.HResult == ErrorPathNotFound)
+                    // 작업이 없으면 "미등록"이다. 읽기 실패로 처리하면 스위치가 잠겨 켤 수 없다.
+                    if (IsNotFound(ex))
                     {
                         return StartupTaskSnapshot.Missing();
                     }
@@ -114,6 +115,23 @@ namespace GameAudioKeys
             {
                 return StartupTaskSnapshot.Unreadable(Describe(ex));
             }
+        }
+
+        // 작업·폴더가 없을 때 작업 스케줄러는 0x80070002(파일 없음)/0x80070003(경로 없음)을 돌려준다.
+        // dynamic(늦은 바인딩) COM 호출에서는 이 HRESULT가 COMException이 아니라
+        // FileNotFoundException/DirectoryNotFoundException으로 바뀌어 올라오므로, 예외 타입이 아니라
+        // HRESULT로 판정한다. 다른 예외에 감싸여 올라오는 경우도 확인한다.
+        internal static bool IsNotFound(Exception ex)
+        {
+            for (Exception current = ex; current != null; current = current.InnerException)
+            {
+                if (current.HResult == ErrorFileNotFound || current.HResult == ErrorPathNotFound)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         public static void Register(StartupTaskDefinition definition)
@@ -198,7 +216,18 @@ namespace GameAudioKeys
         {
             dynamic service = CreateService();
             dynamic folder = service.GetFolder(StartupConstants.TaskFolderPath);
-            folder.DeleteTask(taskName, TaskDeleteNone);
+            try
+            {
+                folder.DeleteTask(taskName, TaskDeleteNone);
+            }
+            catch (Exception ex)
+            {
+                // 조회와 삭제 사이에 이미 없어졌다면 목표 상태(작업 없음)에 도달한 것이다.
+                if (!IsNotFound(ex))
+                {
+                    throw;
+                }
+            }
         }
 
         private static dynamic CreateService()
@@ -219,7 +248,10 @@ namespace GameAudioKeys
             }
             catch (Exception ex)
             {
-                return StartupTaskSnapshot.Unreadable(Describe(ex));
+                // 조회 직후 다른 곳에서 작업이 지워졌다면 "미등록"으로 본다.
+                return IsNotFound(ex)
+                    ? StartupTaskSnapshot.Missing()
+                    : StartupTaskSnapshot.Unreadable(Describe(ex));
             }
         }
 

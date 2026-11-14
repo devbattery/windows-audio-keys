@@ -13,9 +13,9 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyCopyright("Copyright (c) 2026 devbattery")]
 
 // 릴리스 버전: AssemblyInformationalVersion 을 기준으로 나머지 두 값을 맞춘다.
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
-[assembly: AssemblyInformationalVersion("1.1.0")]
+[assembly: AssemblyVersion("1.1.1.0")]
+[assembly: AssemblyFileVersion("1.1.1.0")]
+[assembly: AssemblyInformationalVersion("1.1.1")]
 
 // COM 노출은 쓰지 않는다.
 [assembly: ComVisible(false)]

@@ -93,6 +93,35 @@ namespace GameAudioKeys.Tests
             TestInstallLocationEvaluate();
             TestInstallLocationReal(temporaryDirectory);
             TestStartupLocationWarning();
+            TestStartupTaskNotFound();
+        }
+
+        // 작업이 없을 때(처음 켜는 경우) 조회는 "미등록"이어야 한다. dynamic COM 호출에서는
+        // 0x80070002가 FileNotFoundException으로 올라오므로 예외 타입이 아니라 HRESULT로 판정한다.
+        private static void TestStartupTaskNotFound()
+        {
+            Check("task-notfound-file", StartupTaskService.IsNotFound(new FileNotFoundException("x")), "FileNotFoundException");
+            Check("task-notfound-directory", StartupTaskService.IsNotFound(new DirectoryNotFoundException("x")), "DirectoryNotFoundException");
+            Check("task-notfound-com",
+                StartupTaskService.IsNotFound(new System.Runtime.InteropServices.COMException("x", unchecked((int)0x80070002))),
+                "COMException 0x80070002");
+            Check("task-notfound-wrapped",
+                StartupTaskService.IsNotFound(new System.Reflection.TargetInvocationException(new FileNotFoundException("x"))),
+                "wrapped");
+            Check("task-notfound-access-denied",
+                !StartupTaskService.IsNotFound(new UnauthorizedAccessException("x")),
+                "access denied is not 'missing'");
+            Check("task-notfound-other-com",
+                !StartupTaskService.IsNotFound(new System.Runtime.InteropServices.COMException("x", unchecked((int)0x80070005))),
+                "other HRESULT is not 'missing'");
+            Check("task-notfound-null", !StartupTaskService.IsNotFound(null), "null");
+
+            // 실제 작업 스케줄러: 존재하지 않는 작업 이름 조회(읽기 전용, 등록·삭제 없음).
+            string missingName = "WindowsAudioKeys-test-missing-" + Guid.NewGuid().ToString("N");
+            StartupTaskSnapshot snapshot = StartupTaskService.Query(missingName);
+            Check("task-query-missing-platform",
+                snapshot.ReadOk && !snapshot.TaskExists,
+                snapshot.ReadErrorKo ?? "(no error)");
         }
 
         // 보안 경고는 지금 실행 중인 exe가 아니라 작업에 등록된 exe 경로로 판단해야 한다.
