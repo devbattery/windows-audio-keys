@@ -18,7 +18,7 @@ Windows 11 트레이 유틸리티입니다. 프로그램을 미리 등록할 필
    해시가 같은지 확인합니다.
 
    ```powershell
-   Get-FileHash .\WindowsAudioKeys-v1.1.0.zip -Algorithm SHA256
+   Get-FileHash .\WindowsAudioKeys-v1.1.1.zip -Algorithm SHA256
    ```
 
 3. ZIP을 풀 폴더를 정합니다. 압축 안의 `WindowsAudioKeys.exe`,
@@ -296,7 +296,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Test
 ```
 
 - `AudioProbe.exe --self-test`: 진단 프로브의 26개 순수 로직 검증.
-- `GameAudioKeys.Tests.exe`: 288개 검증. 기본값, 볼륨 클램프와 경계, 다중 세션
+- `GameAudioKeys.Tests.exe`: 296개 검증. 기본값, 볼륨 클램프와 경계, 다중 세션
   토글 결정, 중복/예약/잘못된 단축키, 설정 왕복, 손상/무효 설정 보존, 저장 시
   `.invalid-*.bak` 보존, 공유 대상 선택 로직, 프로세스 스냅샷 생략 판단,
   미저장 변경 감지, 키 녹화 판정, 테마 값 해석에 더해 자동 시작 인수 조합,

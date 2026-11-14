@@ -3,6 +3,16 @@
 이 문서는 릴리스별 주요 변경 사항을 기록합니다. 버전은
 [Semantic Versioning](https://semver.org/lang/ko/)을 따릅니다.
 
+## [1.1.1] - 2026-11-14
+
+### 수정
+
+- 자동 시작 작업이 아직 등록되지 않은 상태(처음 켜거나, 보안 안내에 따라 껐다가 다시
+  켜는 경우)에서 설정 창이 "상태 확인 실패 … 0x80070002"를 표시하고 **Windows 로그인 시
+  자동 시작** 스위치가 잠겨 켤 수 없던 문제를 고쳤습니다. 작업이 없다는 응답을 "사용 안 함"
+  으로 올바르게 처리합니다.
+- 자동 시작을 끌 때 작업이 이미 지워져 있어도 오류 없이 완료합니다.
+
 ## [1.1.0] - 2026-11-14
 
 ### 보안
@@ -66,5 +76,6 @@
 - 브라우저처럼 여러 탭이 한 프로세스를 공유하는 앱은 프로세스 단위로 함께
   조절됩니다.
 
+[1.1.1]: https://github.com/devbattery/windows-audio-keys/releases/tag/v1.1.1
 [1.1.0]: https://github.com/devbattery/windows-audio-keys/releases/tag/v1.1.0
 [1.0.0]: https://github.com/devbattery/windows-audio-keys/releases/tag/v1.0.0
