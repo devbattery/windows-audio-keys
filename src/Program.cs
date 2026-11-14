@@ -84,8 +84,21 @@ namespace GameAudioKeys
                 return 64;
             }
 
+            // 단일 인스턴스 확인. 로그인 자동 시작(관리자 권한) 인스턴스가 만든 mutex는 일반 권한
+            // 프로세스가 열 수 없어 접근 거부가 난다. 이 경우도 "이미 실행 중"으로 처리한다.
             bool createdNew;
-            using (Mutex mutex = new Mutex(true, MutexName, out createdNew))
+            Mutex instanceMutex;
+            try
+            {
+                instanceMutex = new Mutex(true, MutexName, out createdNew);
+            }
+            catch (UnauthorizedAccessException)
+            {
+                instanceMutex = null;
+                createdNew = false;
+            }
+
+            using (Mutex mutex = instanceMutex)
             {
                 if (!createdNew)
                 {

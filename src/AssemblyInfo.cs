@@ -13,9 +13,13 @@ using System.Runtime.InteropServices;
 [assembly: AssemblyCopyright("Copyright (c) 2026 devbattery")]
 
 // 릴리스 버전: AssemblyInformationalVersion 을 기준으로 나머지 두 값을 맞춘다.
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
-[assembly: AssemblyInformationalVersion("1.0.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyInformationalVersion("1.1.0")]
 
 // COM 노출은 쓰지 않는다.
 [assembly: ComVisible(false)]
+
+// P/Invoke 대상 DLL(user32, kernel32, dwmapi, uxtheme 등)은 System32에서만 찾는다.
+// 실행 파일 옆에 같은 이름의 DLL을 심어 두는 공격(DLL 하이재킹)을 막는다.
+[assembly: DefaultDllImportSearchPaths(DllImportSearchPath.System32)]

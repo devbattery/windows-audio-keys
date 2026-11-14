@@ -43,6 +43,19 @@ namespace GameAudioKeys
         private const string ThemeOverrideEnvironment = "GAME_AUDIO_KEYS_THEME";
         private readonly EventHandler themeChangedHandler;
 
+        // 새 버전 알림. 테스트 설정 폴더 실행에서만 환경 변수로 "최신 릴리스"를 흉내 낼 수 있다.
+        private const string UpdateTestEnvironment = "GAME_AUDIO_KEYS_UPDATE_TEST_LATEST";
+        private readonly ReleaseVersion currentVersion;
+        private readonly System.Windows.Forms.Timer updateTimer;
+        private readonly ToolStripMenuItem updateItem;
+        private readonly ToolStripSeparator updateSeparator;
+        private bool updateBusy;
+        private ReleaseVersion availableVersion;
+        private string notifiedVersion;
+        private bool updateBalloonPending;
+        private string updateText;
+        private UpdateTone updateTone = UpdateTone.Normal;
+
         public TrayAppContext(
             SettingsLoadResult load,
             string settingsPath,
@@ -94,6 +107,16 @@ namespace GameAudioKeys
             this.tray.Text = StartupConstants.ProductName;
 
             ContextMenuStrip menu = new ContextMenuStrip();
+
+            // 새 버전이 있을 때만 맨 위에 보이는 항목
+            this.updateItem = new ToolStripMenuItem("새 버전 내려받기");
+            this.updateItem.Visible = false;
+            this.updateItem.Click += delegate { this.OpenReleasePage(null); };
+            this.updateSeparator = new ToolStripSeparator();
+            this.updateSeparator.Visible = false;
+            menu.Items.Add(this.updateItem);
+            menu.Items.Add(this.updateSeparator);
+
             menu.Items.Add("설정 열기", null, delegate { this.form.ShowSettings(); });
             this.pauseItem = new ToolStripMenuItem("일시정지");
             this.pauseItem.Click += delegate { this.TogglePause(); };
@@ -102,6 +125,31 @@ namespace GameAudioKeys
             menu.Items.Add("종료", null, delegate { this.ExitApp(); });
             this.tray.ContextMenuStrip = menu;
             this.tray.DoubleClick += delegate { this.form.ShowSettings(); };
+
+            // 알림(풍선/토스트)을 누르면 새 버전 알림일 때만 릴리스 페이지를 연다.
+            this.tray.BalloonTipClicked += delegate
+            {
+                bool wasUpdate = this.updateBalloonPending;
+                this.updateBalloonPending = false;
+                if (wasUpdate)
+                {
+                    this.OpenReleasePage(null);
+                }
+                else
+                {
+                    // 그 밖의 알림(보안 경고, 열기 실패 안내)은 설정 창에서 자세히 보여 준다.
+                    this.form.ShowSettings();
+                }
+            };
+            this.tray.BalloonTipClosed += delegate { this.updateBalloonPending = false; };
+
+            this.currentVersion = UpdateCheckLogic.CurrentVersion(Application.ProductVersion);
+            this.updateTimer = new System.Windows.Forms.Timer();
+            this.updateTimer.Tick += delegate
+            {
+                this.updateTimer.Stop();
+                this.StartUpdateCheck(false);
+            };
 
             // Suppress registration until the first foreground check completes when the
             // settings window is about to be shown.
@@ -122,6 +170,55 @@ namespace GameAudioKeys
 
             this.RefreshForegroundState();
             this.UpdateStatusIndicators();
+
+            this.SetUpdateView(this.IdleUpdateText(), this.IdleUpdateTone());
+            this.ScheduleAutomaticUpdateCheck(UpdateCheckLogic.FirstCheckDelay);
+
+            // 로그인 자동 시작 인스턴스는 트레이에만 머문다. 자동 시작 작업이 위험한 위치를
+            // 가리키면 사용자가 설정 창을 열지 않아도 알 수 있게 한 번 알린다.
+            if (startupMode && !settingsOverridden)
+            {
+                this.WarnIfStartupLocationUnsafe();
+            }
+        }
+
+        private void WarnIfStartupLocationUnsafe()
+        {
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                StartupTaskState state;
+                try
+                {
+                    state = StartupTaskHost.QueryState();
+                }
+                catch (Exception)
+                {
+                    return;
+                }
+
+                if (state == null || state.LocationWarningKo == null)
+                {
+                    return;
+                }
+
+                try
+                {
+                    this.uiDispatcher.BeginInvoke(new MethodInvoker(delegate
+                    {
+                        if (!this.exiting)
+                        {
+                            this.ShowTrayNotice(
+                                StartupConstants.ProductName + " 보안 경고",
+                                "자동 시작 작업이 일반 사용자가 수정할 수 있는 위치의 실행 파일을 관리자 권한으로 실행하고 있습니다. 눌러서 설정 창에서 확인하세요.",
+                                false);
+                        }
+                    }));
+                }
+                catch (Exception)
+                {
+                    // 알림을 못 띄워도 설정 창을 열면 같은 경고가 표시된다.
+                }
+            });
         }
 
         public bool IsExiting
@@ -408,6 +505,15 @@ namespace GameAudioKeys
                     {
                         source.SetStartupBusy(false);
                         source.SetStartupState(state);
+
+                        // 실패 이유(위치 거부, 승인 취소 등)는 스위치 바로 아래에도 보여 준다.
+                        // 단, 상태 자체에 보안 경고가 있으면 그 경고를 그대로 둔다.
+                        if (!result.Success && !string.IsNullOrEmpty(result.MessageKo)
+                            && (state == null || state.LocationWarningKo == null))
+                        {
+                            source.SetStartupMessage(result.MessageKo, true);
+                        }
+
                         this.form.SetLastAction(result.MessageKo, !result.Success);
                     }
                 });
@@ -473,6 +579,265 @@ namespace GameAudioKeys
                 this.form.SetStartupBusy(false);
             }
         }
+
+        #region 새 버전 알림
+
+        // 자동 확인 일정. 꺼져 있거나 테스트 설정 폴더 실행이면 예약하지 않는다.
+        private void ScheduleAutomaticUpdateCheck(TimeSpan delay)
+        {
+            if (this.exiting)
+            {
+                return;
+            }
+
+            this.updateTimer.Stop();
+            if (!this.settings.CheckForUpdates || this.settingsOverridden || this.currentVersion == null)
+            {
+                return;
+            }
+
+            double milliseconds = Math.Max(1000d, Math.Min(int.MaxValue, delay.TotalMilliseconds));
+            this.updateTimer.Interval = (int)milliseconds;
+            this.updateTimer.Start();
+        }
+
+        // 설정 창의 "지금 확인". 테스트 설정 폴더에서도 동작한다.
+        public void CheckForUpdatesNow()
+        {
+            this.StartUpdateCheck(true);
+        }
+
+        private void StartUpdateCheck(bool manual)
+        {
+            if (this.exiting || this.updateBusy)
+            {
+                return;
+            }
+
+            if (this.currentVersion == null)
+            {
+                this.SetUpdateView("현재 버전 정보를 읽지 못해 새 버전을 확인할 수 없습니다.", UpdateTone.Error);
+                return;
+            }
+
+            this.updateBusy = true;
+            this.SetUpdateView("새 버전을 확인하는 중입니다...", UpdateTone.Normal);
+
+            ReleaseVersion current = this.currentVersion;
+            string testLatest = this.settingsOverridden
+                ? Environment.GetEnvironmentVariable(UpdateTestEnvironment)
+                : null;
+
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                UpdateCheckResult result;
+                try
+                {
+                    if (string.IsNullOrEmpty(testLatest))
+                    {
+                        result = UpdateClient.CheckLatest(current);
+                    }
+                    else
+                    {
+                        LatestRelease simulated = new LatestRelease();
+                        simulated.TagName = testLatest;
+                        result = UpdateCheckLogic.BuildResult(current, simulated);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    result = UpdateCheckResult.Failure("새 버전 확인 중 오류가 발생했습니다: " + ex.Message);
+                }
+
+                // 자동 시작 작업과 진행 상태를 섞지 않도록 업데이트 결과는 따로 보낸다.
+                // 전달에 실패하면(메시지 루프 종료 중) 진행 중 표시만 푼다.
+                try
+                {
+                    this.uiDispatcher.BeginInvoke(new MethodInvoker(delegate { this.ApplyUpdateResult(result, manual); }));
+                }
+                catch (Exception)
+                {
+                    this.updateBusy = false;
+                }
+            });
+        }
+
+        private void ApplyUpdateResult(UpdateCheckResult result, bool manual)
+        {
+            this.updateBusy = false;
+            if (this.exiting)
+            {
+                return;
+            }
+
+            string checkedAt = DateTime.Now.ToString("HH:mm", System.Globalization.CultureInfo.InvariantCulture);
+            if (!result.Success)
+            {
+                // 실패해도 이전에 찾은 새 버전 정보는 유지한다. 자동 확인은 1시간 뒤 다시 시도한다.
+                this.SetUpdateView(result.MessageKo + " (" + checkedAt + ")", UpdateTone.Error);
+                this.ScheduleAutomaticUpdateCheck(UpdateCheckLogic.RetryInterval);
+                return;
+            }
+
+            string current = "v" + this.currentVersion;
+            if (result.Status == UpdateStatus.UpdateAvailable)
+            {
+                this.availableVersion = result.Latest;
+                string latest = "v" + result.Latest;
+                this.updateItem.Text = "새 버전 " + latest + " 내려받기";
+                this.SetUpdateView(
+                    "새 버전이 있습니다: " + latest + " (현재 " + current + "). '릴리스 페이지 열기'에서 내려받으세요.",
+                    UpdateTone.Attention);
+
+                // 같은 버전은 실행 중 한 번만 알린다. 설정 창을 보고 있으면 행 표시로 충분하다.
+                if (this.notifiedVersion != latest && !(manual && this.form.Visible))
+                {
+                    this.notifiedVersion = latest;
+                    this.ShowTrayNotice(
+                        StartupConstants.ProductName + " 새 버전 " + latest,
+                        "새 버전이 있습니다. 눌러서 릴리스 페이지를 엽니다. (현재 " + current + ")",
+                        true);
+                }
+            }
+            else
+            {
+                this.availableVersion = null;
+                this.SetUpdateView(
+                    result.Status == UpdateStatus.UpToDate
+                        ? "최신 버전입니다. (" + current + ", " + checkedAt + " 확인)"
+                        : "이 버전(" + current + ")이 게시된 최신 릴리스(v" + result.Latest + ")보다 새 버전입니다.",
+                    UpdateTone.Success);
+            }
+
+            this.ScheduleAutomaticUpdateCheck(UpdateCheckLogic.CheckInterval);
+        }
+
+        // 설정 창 스위치: 일시정지 스위치처럼 즉시 저장한다. 편집 중인 단축키 값은 건드리지 않는다.
+        public void SetUpdateCheckEnabled(MainForm source, bool enabled)
+        {
+            if (this.exiting)
+            {
+                return;
+            }
+
+            if (enabled == this.settings.CheckForUpdates)
+            {
+                source.SetUpdateCheckEnabledState(enabled);
+                return;
+            }
+
+            AppSettings proposed = this.settings.Clone();
+            proposed.CheckForUpdates = enabled;
+            string saveError;
+            if (!SettingsStore.TrySave(this.settingsPath, proposed, out saveError))
+            {
+                source.SetUpdateCheckEnabledState(this.settings.CheckForUpdates);
+                this.SetUpdateView("설정을 저장하지 못했습니다: " + saveError, UpdateTone.Error);
+                return;
+            }
+
+            this.settings = proposed;
+            source.SetUpdateCheckEnabledState(enabled);
+            if (!enabled)
+            {
+                this.updateTimer.Stop();
+                if (!this.updateBusy && this.availableVersion == null)
+                {
+                    this.SetUpdateView(this.IdleUpdateText(), this.IdleUpdateTone());
+                }
+
+                return;
+            }
+
+            if (this.settingsOverridden)
+            {
+                this.SetUpdateView(this.IdleUpdateText(), this.IdleUpdateTone());
+                return;
+            }
+
+            // 다시 켜면 바로 한 번 확인하고, 결과에 따라 다음 일정을 잡는다.
+            this.StartUpdateCheck(false);
+        }
+
+        // 트레이 메뉴·알림·설정 창 버튼에서 공통으로 쓴다. 검증된 버전으로 만든 주소만 연다.
+        public void OpenReleasePage(MainForm source)
+        {
+            if (this.exiting || this.availableVersion == null)
+            {
+                return;
+            }
+
+            string message;
+            if (ShellLauncher.OpenReleasePage(UpdateCheckLogic.ReleasePageUrl(this.availableVersion), out message))
+            {
+                return;
+            }
+
+            this.SetUpdateView(message, UpdateTone.Error);
+            if (!this.form.Visible)
+            {
+                this.ShowTrayNotice(StartupConstants.ProductName, message, false);
+            }
+        }
+
+        private string IdleUpdateText()
+        {
+            if (this.currentVersion == null)
+            {
+                return "현재 버전 정보를 읽지 못해 새 버전을 확인할 수 없습니다.";
+            }
+
+            if (!this.settings.CheckForUpdates)
+            {
+                return "자동 확인이 꺼져 있습니다. '지금 확인'으로 직접 확인할 수 있습니다.";
+            }
+
+            if (this.settingsOverridden)
+            {
+                return "테스트 설정 폴더에서는 자동 확인을 하지 않습니다. '지금 확인'은 사용할 수 있습니다.";
+            }
+
+            return "잠시 후 새 버전을 확인합니다.";
+        }
+
+        private UpdateTone IdleUpdateTone()
+        {
+            return this.currentVersion == null ? UpdateTone.Error : UpdateTone.Normal;
+        }
+
+        private void SetUpdateView(string text, UpdateTone tone)
+        {
+            this.updateText = text;
+            this.updateTone = tone;
+            this.PushUpdateView();
+        }
+
+        private void PushUpdateView()
+        {
+            bool available = this.availableVersion != null;
+            this.updateItem.Visible = available;
+            this.updateSeparator.Visible = available;
+            if (!this.form.IsDisposed)
+            {
+                this.form.SetUpdateState(this.updateText, this.updateTone, available, this.updateBusy);
+            }
+        }
+
+        private void ShowTrayNotice(string title, string text, bool isUpdate)
+        {
+            try
+            {
+                this.updateBalloonPending = isUpdate;
+                this.tray.ShowBalloonTip(10000, title, text, ToolTipIcon.Info);
+            }
+            catch (Exception)
+            {
+                // 알림 영역 오류가 단축키나 설정에 영향을 주면 안 된다.
+                this.updateBalloonPending = false;
+            }
+        }
+
+        #endregion
 
         private void InstallForegroundHook()
         {
@@ -696,7 +1061,7 @@ namespace GameAudioKeys
 
             if (!this.settings.Enabled)
             {
-                text = "일시정지됨 - 단축키가 등록되지 않았습니다. 트레이 메뉴에서 다시 시작할 수 있습니다.";
+                text = "일시정지됨 - 단축키가 등록되지 않았습니다. 위쪽 '단축키 사용' 스위치나 트레이 메뉴의 '다시 시작'으로 켤 수 있습니다.";
                 return RuntimeState.Paused;
             }
 
@@ -818,6 +1183,9 @@ namespace GameAudioKeys
                 this.hotkeys.Dispose();
                 this.hotkeys = null;
             }
+
+            this.updateTimer.Stop();
+            this.updateTimer.Dispose();
 
             try
             {

@@ -842,10 +842,39 @@ namespace GameAudioKeys
             base.OnMouseDown(e);
         }
 
+        // 휠로 값을 바꾸는 것은 이 컨트롤에 포커스가 있을 때만이다. 페이지를 스크롤하다 커서가
+        // 지나가도 설정이 바뀌지 않게 한다. 고정밀 터치패드의 작은 휠 값은 한 칸(120)만큼 모아서 쓴다.
+        private int wheelRemainder;
+
         protected override void OnMouseWheel(MouseEventArgs e)
         {
-            this.Value = this.current + (e.Delta > 0 ? 1 : -1);
-            base.OnMouseWheel(e);
+            if (!this.Focused)
+            {
+                this.wheelRemainder = 0;
+                base.OnMouseWheel(e);
+                return;
+            }
+
+            this.wheelRemainder += e.Delta;
+            int notches = this.wheelRemainder / 120;
+            if (notches != 0)
+            {
+                this.wheelRemainder -= notches * 120;
+                this.Value = this.current + notches;
+            }
+
+            // 처리한 휠은 부모(스크롤 영역)로 넘기지 않는다.
+            HandledMouseEventArgs handled = e as HandledMouseEventArgs;
+            if (handled != null)
+            {
+                handled.Handled = true;
+            }
+        }
+
+        protected override void OnLostFocus(EventArgs e)
+        {
+            this.wheelRemainder = 0;
+            base.OnLostFocus(e);
         }
 
         protected override void OnPaint(PaintEventArgs e)

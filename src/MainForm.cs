@@ -10,6 +10,15 @@ using GameAudioKeys.Core;
 
 namespace GameAudioKeys
 {
+    // 업데이트 상태 문구의 색 의미: 보통·최신·새 버전 있음·오류.
+    internal enum UpdateTone
+    {
+        Normal,
+        Success,
+        Attention,
+        Error
+    }
+
     internal sealed class MainForm : Form
     {
         private const string HeroSuffix = " · 활성 창의 앱 소리만 조절합니다";
@@ -33,6 +42,10 @@ namespace GameAudioKeys
         private ToggleSwitch startupSwitch;
         private ModernButton startupRefreshButton;
         private Label startupStateLabel;
+        private ToggleSwitch updateSwitch;
+        private ModernButton updateCheckButton;
+        private ModernButton updateOpenButton;
+        private Label updateStateLabel;
         private Label stateLabel;
         private Label lastLabel;
         private Label dirtyLabel;
@@ -51,6 +64,7 @@ namespace GameAudioKeys
         private string lastRuntimeText;
         private bool lastActionError;
         private StartupTone startupTone = StartupTone.Normal;
+        private UpdateTone updateTone = UpdateTone.Normal;
 
         public MainForm(TrayAppContext context)
         {
@@ -110,7 +124,72 @@ namespace GameAudioKeys
             settings.VolumeDown = this.volumeDownRecorder.Binding;
             settings.Step = this.stepInput.Value;
             settings.Enabled = this.enabledSwitch.Checked;
+
+            // 업데이트 자동 확인은 스위치를 누르는 즉시 저장된다. 저장 버튼이 이 값을
+            // 되돌리지 않도록 마지막으로 저장된 값을 그대로 쓴다.
+            settings.CheckForUpdates = this.savedSettings != null
+                ? this.savedSettings.CheckForUpdates
+                : this.updateSwitch.Checked;
             return settings;
+        }
+
+        // 업데이트 자동 확인 스위치가 즉시 저장된 뒤(또는 저장 실패로 되돌릴 때) 호출된다.
+        public void SetUpdateCheckEnabledState(bool enabled)
+        {
+            if (this.InvokeRequired)
+            {
+                this.BeginInvoke(new Action<bool>(this.SetUpdateCheckEnabledState), new object[] { enabled });
+                return;
+            }
+
+            if (this.savedSettings != null)
+            {
+                this.savedSettings.CheckForUpdates = enabled;
+            }
+
+            this.updateSwitch.Checked = enabled;
+            this.UpdateDirtyState();
+        }
+
+        // 업데이트 상태 문구, 새 버전 버튼 표시, 확인 중 버튼 잠금을 한 번에 갱신한다.
+        public void SetUpdateState(string text, UpdateTone tone, bool updateAvailable, bool busy)
+        {
+            if (this.InvokeRequired)
+            {
+                this.BeginInvoke(
+                    new Action<string, UpdateTone, bool, bool>(this.SetUpdateState),
+                    new object[] { text, tone, updateAvailable, busy });
+                return;
+            }
+
+            if (this.IsDisposed)
+            {
+                return;
+            }
+
+            this.updateStateLabel.Text = text;
+            this.updateTone = tone;
+            if (this.updateOpenButton.Visible != updateAvailable)
+            {
+                // 포커스가 있는 버튼을 숨기면 다음 탭 위치(종료 버튼 등)로 포커스가 넘어가므로
+                // 먼저 옆의 '지금 확인'으로 옮기거나 창에 맡긴다.
+                if (!updateAvailable && this.updateOpenButton.Focused)
+                {
+                    if (!busy && this.updateCheckButton.CanFocus)
+                    {
+                        this.updateCheckButton.Focus();
+                    }
+                    else
+                    {
+                        this.ActiveControl = null;
+                    }
+                }
+
+                this.updateOpenButton.Visible = updateAvailable;
+            }
+
+            this.SetEnabledKeepingFocus(this.updateCheckButton, !busy);
+            this.ApplyDynamicColors(ThemeManager.Current);
         }
 
         // 헤더 스위치·트레이 일시정지로 사용 여부만 바뀐 경우. 편집 중인 단축키 값은 그대로 둔다.
@@ -264,8 +343,39 @@ namespace GameAudioKeys
             }
 
             bool usable = !this.startupBusy && !this.startupBlocked && !this.startupUnknown;
-            this.startupSwitch.Enabled = usable;
-            this.startupRefreshButton.Enabled = usable;
+            this.SetEnabledKeepingFocus(this.startupSwitch, usable);
+            this.SetEnabledKeepingFocus(this.startupRefreshButton, usable);
+        }
+
+        // 포커스가 있는 컨트롤을 비활성화하면 WinForms가 다음 탭 위치(하단 '종료' 버튼 등)로
+        // 포커스를 옮긴다. 그 상태에서 Space를 다시 누르면 엉뚱한 버튼이 눌리므로, 잠시 창 자체에
+        // 포커스를 두었다가 컨트롤이 다시 켜지면 돌려준다.
+        private Control focusToRestore;
+
+        private void SetEnabledKeepingFocus(Control control, bool enabled)
+        {
+            if (control.Enabled == enabled)
+            {
+                return;
+            }
+
+            if (!enabled && control.Focused)
+            {
+                this.focusToRestore = control;
+                this.ActiveControl = null;
+            }
+
+            control.Enabled = enabled;
+
+            // 그사이 사용자가 다른 곳으로 포커스를 옮겼으면(창에 맡겨 둔 상태가 아니면) 돌려주지 않는다.
+            if (enabled && object.ReferenceEquals(this.focusToRestore, control))
+            {
+                this.focusToRestore = null;
+                if (this.ContainsFocus && this.ActiveControl == null && control.Visible && control.CanFocus)
+                {
+                    control.Focus();
+                }
+            }
         }
 
         public void ShowSettings()
@@ -276,7 +386,8 @@ namespace GameAudioKeys
                 return;
             }
 
-            this.ShowInTaskbar = true;
+            // ShowInTaskbar를 바꾸면 창 핸들 전체가 다시 만들어지고(자식 창 수십 개 재생성,
+            // 단축키 재등록) 느려진다. 숨긴 창에는 작업 표시줄 단추가 없으므로 Show/Hide만 쓴다.
             if (!this.Visible)
             {
                 this.Show();
@@ -301,7 +412,6 @@ namespace GameAudioKeys
             }
 
             this.Hide();
-            this.ShowInTaskbar = false;
         }
 
         // Windows 앱 테마(라이트/다크/고대비)가 바뀌면 색과 제목 표시줄을 다시 적용한다.
@@ -405,7 +515,19 @@ namespace GameAudioKeys
         {
             if (m.Msg == Native.WM_HOTKEY)
             {
-                this.context.HandleHotkey(m.WParam.ToInt32());
+                int id = m.WParam.ToInt32();
+                this.context.HandleHotkey(id);
+
+                // 볼륨 키를 누르고 있으면 처리하는 동안 반복 입력이 쌓인다. 쌓인 것을 그대로
+                // 처리하면 키를 놓은 뒤에도 볼륨이 계속 바뀌므로, 처리 중 쌓인 같은 키 입력은
+                // 버린다(덜 바꾸는 쪽). 계속 누르고 있으면 다음 반복 입력이 이어서 처리된다.
+                // 음소거는 MOD_NOREPEAT로 등록되어 반복 입력이 없다. 쌓인 음소거는 실제로 따로 누른
+                // 입력이므로 버리지 않는다.
+                if (id == HotkeyManager.VolumeUpId || id == HotkeyManager.VolumeDownId)
+                {
+                    Native.DiscardQueuedHotkeys(this.Handle, id, 64);
+                }
+
                 return;
             }
 
@@ -633,7 +755,8 @@ namespace GameAudioKeys
                 this.NewRow(
                     GlyphKind.Power,
                     "Windows 로그인 시 자동 시작",
-                    "관리자 권한으로 시작합니다. 켜고 끌 때 Windows 승인이 필요할 수 있습니다. 현재 권한: "
+                    "관리자 권한으로 시작합니다. 보안을 위해 Program Files 폴더 아래에 설치한 경우에만 켤 수 있으며, "
+                        + "켜고 끌 때 Windows 승인이 필요할 수 있습니다. 현재 권한: "
                         + (StartupTaskHost.IsElevated() ? "관리자" : "일반 사용자"),
                     startupControls,
                     out startupText),
@@ -645,8 +768,10 @@ namespace GameAudioKeys
             startupText.Controls.Add(this.startupStateLabel, 0, 2);
             this.AddWrapForRowText(this.startupStateLabel, startupText);
 
+            rows.Controls.Add(this.BuildUpdateRow(), 0, 1);
+
             TableLayoutPanel stateText;
-            rows.Controls.Add(this.NewRow(GlyphKind.Activity, "현재 상태", null, null, out stateText), 0, 1);
+            rows.Controls.Add(this.NewRow(GlyphKind.Activity, "현재 상태", null, null, out stateText), 0, 2);
             this.stateLabel = this.NewLabel("상태 확인 중...", UiTheme.SmallFont(), null);
             this.stateLabel.Margin = new Padding(0, 2, 0, 0);
             this.stateLabel.AccessibleName = "단축키 상태";
@@ -654,13 +779,59 @@ namespace GameAudioKeys
             this.AddWrapForRowText(this.stateLabel, stateText);
 
             TableLayoutPanel lastText;
-            rows.Controls.Add(this.NewRow(GlyphKind.Speaker, "마지막 동작", null, null, out lastText), 0, 2);
+            rows.Controls.Add(this.NewRow(GlyphKind.Speaker, "마지막 동작", null, null, out lastText), 0, 3);
             this.lastLabel = this.NewLabel("없음", UiTheme.SmallFont(), null);
             this.lastLabel.Margin = new Padding(0, 2, 0, 0);
             this.lastLabel.AccessibleName = "마지막 동작";
             lastText.Controls.Add(this.lastLabel, 0, 1);
             this.AddWrapForRowText(this.lastLabel, lastText);
             return rows;
+        }
+
+        // 업데이트 행: [아이콘] [제목·설명·상태·버튼 줄] [자동 확인 스위치].
+        // 버튼을 오른쪽 열이 아닌 글자 영역 아래에 두어 최소 창 폭에서도 설명이 좁아지지 않게 한다.
+        private Control BuildUpdateRow()
+        {
+            this.updateSwitch = new ToggleSwitch("새 버전 자동 확인");
+            this.updateSwitch.Anchor = AnchorStyles.Right;
+            this.updateSwitch.UserToggled += delegate
+            {
+                this.context.SetUpdateCheckEnabled(this, this.updateSwitch.Checked);
+            };
+
+            TableLayoutPanel updateText;
+            Control row = this.NewRow(
+                GlyphKind.Info,
+                "새 버전 알림",
+                "하루 한 번 GitHub에서 새 버전을 확인해 알려 줍니다. 설치는 직접 합니다. 현재 버전: v"
+                    + Application.ProductVersion,
+                this.updateSwitch,
+                out updateText);
+
+            this.updateStateLabel = this.NewLabel("아직 확인하지 않았습니다.", UiTheme.SmallFont(), null);
+            this.updateStateLabel.Margin = new Padding(0, 4, 0, 0);
+            this.updateStateLabel.AccessibleName = "업데이트 상태";
+            updateText.Controls.Add(this.updateStateLabel, 0, 2);
+            this.AddWrapForRowText(this.updateStateLabel, updateText);
+
+            this.updateCheckButton = new ModernButton("지금 확인", ModernButtonKind.Secondary);
+            this.updateCheckButton.Margin = new Padding(0, 0, 8, 0);
+            this.updateCheckButton.AccessibleName = "새 버전 지금 확인";
+            this.updateCheckButton.Click += delegate { this.context.CheckForUpdatesNow(); };
+
+            this.updateOpenButton = new ModernButton("릴리스 페이지 열기", ModernButtonKind.Primary);
+            this.updateOpenButton.Margin = new Padding(0);
+            this.updateOpenButton.AccessibleName = "새 버전 릴리스 페이지 열기";
+            this.updateOpenButton.Visible = false;
+            this.updateOpenButton.Click += delegate { this.context.OpenReleasePage(this); };
+
+            TableLayoutPanel buttons = NewGrid(2);
+            buttons.Anchor = AnchorStyles.Left;
+            buttons.Margin = new Padding(0, 8, 0, 0);
+            buttons.Controls.Add(this.updateCheckButton, 0, 0);
+            buttons.Controls.Add(this.updateOpenButton, 1, 0);
+            updateText.Controls.Add(buttons, 0, 3);
+            return row;
         }
 
         private Control BuildFooter()
@@ -852,6 +1023,15 @@ namespace GameAudioKeys
                     ? p.Error
                     : (this.startupTone == StartupTone.Success ? p.Success : p.SubText);
             }
+
+            if (this.updateStateLabel != null)
+            {
+                this.updateStateLabel.ForeColor = this.updateTone == UpdateTone.Error
+                    ? p.Error
+                    : (this.updateTone == UpdateTone.Success
+                        ? p.Success
+                        : (this.updateTone == UpdateTone.Attention ? p.Accent : p.SubText));
+            }
         }
 
         private void AddWrapForRowText(Label label, TableLayoutPanel text)
@@ -864,12 +1044,29 @@ namespace GameAudioKeys
         #region 줄바꿈·변경 감지
 
         // 자동 크기 라벨은 MaximumSize 폭이 있어야 줄바꿈한다. 카드 안 실제 글자 영역 폭에 맞춘다.
+        private bool updatingWraps;
+
         private void UpdateWrappingWidths()
         {
-            if (this.scrollHost == null)
+            // MaximumSize 변경이 레이아웃을 다시 일으켜 이 함수가 재진입하므로 한 번만 돈다.
+            if (this.scrollHost == null || this.updatingWraps)
             {
                 return;
             }
+
+            this.updatingWraps = true;
+            try
+            {
+                this.UpdateWrappingWidthsCore();
+            }
+            finally
+            {
+                this.updatingWraps = false;
+            }
+        }
+
+        private void UpdateWrappingWidthsCore()
+        {
 
             // 세로 스크롤바가 보이면 ClientSize가 그만큼 줄어든 값이다.
             int content = this.scrollHost.ClientSize.Width - this.scrollHost.Padding.Horizontal;
@@ -901,6 +1098,7 @@ namespace GameAudioKeys
                 if (includeEnabled)
                 {
                     this.enabledSwitch.Checked = settings.Enabled;
+                    this.updateSwitch.Checked = settings.CheckForUpdates;
                 }
             }
             finally

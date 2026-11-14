@@ -412,10 +412,32 @@ namespace GameAudioKeys
                 }
                 else
                 {
-                    string direction = delta > 0 ? "+" : string.Empty;
-                    outcome.StatusKo = target + " 볼륨 " + direction
-                        + delta.ToString(CultureInfo.InvariantCulture) + "%"
-                        + " · 세션 " + changed.Count.ToString(CultureInfo.InvariantCulture) + "개";
+                    // 변경 후 실제 볼륨을 보여 준다. 이미 0%/100%라 값이 그대로면 그렇게 알린다.
+                    bool anyMoved = false;
+                    for (int i = 0; i < changed.Count; i++)
+                    {
+                        float before = changed[i].OrigVolume;
+                        if (VolumeMath.ToPercent(VolumeMath.Step(before, delta)) != VolumeMath.ToPercent(before))
+                        {
+                            anyMoved = true;
+                            break;
+                        }
+                    }
+
+                    int resultPercent = VolumeMath.ToPercent(VolumeMath.Step(changed[0].OrigVolume, delta));
+                    string sessionsText = " · 세션 " + changed.Count.ToString(CultureInfo.InvariantCulture) + "개";
+                    if (!anyMoved)
+                    {
+                        outcome.StatusKo = target + (delta > 0 ? " 이미 최대 볼륨입니다" : " 이미 최소 볼륨입니다")
+                            + " (" + resultPercent.ToString(CultureInfo.InvariantCulture) + "%)" + sessionsText;
+                    }
+                    else
+                    {
+                        string direction = delta > 0 ? "+" : string.Empty;
+                        outcome.StatusKo = target + " 볼륨 "
+                            + resultPercent.ToString(CultureInfo.InvariantCulture) + "% ("
+                            + direction + delta.ToString(CultureInfo.InvariantCulture) + "%)" + sessionsText;
+                    }
                 }
 
                 return outcome;

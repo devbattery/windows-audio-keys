@@ -567,6 +567,12 @@ namespace GameAudioKeys
         public bool CheckboxKnown;
         public bool CheckboxChecked;
 
+        // 이 앱 소유 작업이 실제로 실행하는 exe 경로(등록된 값). 소유 작업일 때만 채워진다.
+        public string RegisteredExecutablePath;
+
+        // 켜진 작업이 일반 사용자가 수정할 수 있는 위치를 가리키면 채워진다(보안 경고).
+        public string LocationWarningKo;
+
         public bool IsEnabled
         {
             get { return this.Kind == StartupTaskStateKind.Enabled; }
@@ -577,7 +583,8 @@ namespace GameAudioKeys
             get
             {
                 return this.Kind == StartupTaskStateKind.Unreadable
-                    || this.Kind == StartupTaskStateKind.ForeignOwner;
+                    || this.Kind == StartupTaskStateKind.ForeignOwner
+                    || this.LocationWarningKo != null;
             }
         }
     }
@@ -630,11 +637,17 @@ namespace GameAudioKeys
                 return foreign;
             }
 
+            // 보안 경고는 지금 실행 중인 exe가 아니라 작업이 실제로 실행하는 경로로 판단한다.
+            string registeredPath = snapshot.Actions.Count == 1 && snapshot.Actions[0].Path != null
+                ? NormalizePath(snapshot.Actions[0].Path)
+                : null;
+
             string detail;
             bool pathChanged;
             if (!Matches(snapshot, definition, out detail, out pathChanged))
             {
                 StartupTaskState mismatch = new StartupTaskState();
+                mismatch.RegisteredExecutablePath = registeredPath;
                 mismatch.Kind = pathChanged ? StartupTaskStateKind.NeedsRefresh : StartupTaskStateKind.Mismatch;
                 mismatch.CheckboxKnown = true;
                 mismatch.CheckboxChecked = snapshot.TaskEnabled;
@@ -645,6 +658,7 @@ namespace GameAudioKeys
             }
 
             StartupTaskState owned = new StartupTaskState();
+            owned.RegisteredExecutablePath = registeredPath;
             owned.CheckboxKnown = true;
             owned.CheckboxChecked = snapshot.TaskEnabled;
             if (snapshot.TaskEnabled)

@@ -51,6 +51,9 @@ $modernControls = Join-Path $projectRoot 'src\ModernControls.cs'
 $keyCapture = Join-Path $projectRoot 'src\KeyCapture.cs'
 $trayContext = Join-Path $projectRoot 'src\TrayAppContext.cs'
 $program = Join-Path $projectRoot 'src\Program.cs'
+$updateCheck = Join-Path $projectRoot 'src\UpdateCheck.cs'
+$shellLauncher = Join-Path $projectRoot 'src\ShellLauncher.cs'
+$installLocation = Join-Path $projectRoot 'src\InstallLocation.cs'
 $appConfig = Join-Path $projectRoot 'src\app.config'
 $appManifest = Join-Path $projectRoot 'src\app.manifest'
 $tests = Join-Path $projectRoot 'tests\Tests.cs'
@@ -80,6 +83,9 @@ $required = @(
     $keyCapture
     $trayContext
     $program
+    $updateCheck
+    $shellLauncher
+    $installLocation
     $appConfig
     $appManifest
     $tests
@@ -152,6 +158,9 @@ Invoke-Compiler -Description 'Application build' -Arguments ($common + @(
     $mainForm
     $trayContext
     $startupService
+    $updateCheck
+    $shellLauncher
+    $installLocation
     $program
 ))
 
@@ -171,6 +180,8 @@ Invoke-Compiler -Description 'Test build' -Arguments ($common + @(
     $startupService
     $uiTheme
     $keyCapture
+    $updateCheck
+    $installLocation
     $tests
 ))
 

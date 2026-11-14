@@ -369,6 +369,67 @@ namespace GameAudioKeys
             return new StartupTaskDefinition(sid, executable, directory, StartupConstants.StartupArgument);
         }
 
+        // 관리자 권한 자동 시작을 허용할 위치인지 검사한다(Program Files 아래, 관리자 전용 권한).
+        public static InstallLocationCheck CheckInstallLocation()
+        {
+            try
+            {
+                return InstallLocation.CheckCurrent(OwnExecutablePath());
+            }
+            catch (Exception ex)
+            {
+                return InstallLocationCheck.Unsafe("설치 위치를 확인하지 못했습니다: " + ex.Message);
+            }
+        }
+
+        // 켜진 소유 작업(사용 중·갱신 필요·다시 적용 필요)이 실제로 실행하는 exe 위치를 검사해
+        // 일반 사용자가 수정할 수 있으면 보안 경고를 붙인다. 지금 실행 중인 복사본의 위치와는 무관하다.
+        public static void ApplyLocationWarning(StartupTaskState state)
+        {
+            ApplyLocationWarning(state, InstallLocation.CheckCurrent);
+        }
+
+        public static void ApplyLocationWarning(StartupTaskState state, Func<string, InstallLocationCheck> check)
+        {
+            if (state == null || !state.CheckboxKnown || !state.CheckboxChecked)
+            {
+                return;
+            }
+
+            InstallLocationCheck location;
+            if (string.IsNullOrEmpty(state.RegisteredExecutablePath))
+            {
+                location = InstallLocationCheck.Unsafe("작업에 등록된 실행 파일 경로를 확인하지 못했습니다.");
+            }
+            else
+            {
+                try
+                {
+                    location = check(state.RegisteredExecutablePath);
+                }
+                catch (Exception ex)
+                {
+                    location = InstallLocationCheck.Unsafe("설치 위치를 확인하지 못했습니다: " + ex.Message);
+                }
+            }
+
+            if (location.Safe)
+            {
+                return;
+            }
+
+            state.LocationWarningKo = location.ReasonKo;
+            state.MessageKo = "보안 경고 - 자동 시작 작업이 일반 사용자가 수정할 수 있는 위치의 실행 파일을 관리자 권한으로 실행합니다. "
+                + location.ReasonKo
+                + " 자동 시작을 끄고, 앱을 Program Files 폴더 아래로 옮긴 뒤 다시 켜세요.";
+        }
+
+        public static string UnsafeLocationMessage(InstallLocationCheck check)
+        {
+            return "관리자 권한 자동 시작은 일반 사용자가 수정할 수 없는 위치(예: C:\\Program Files\\WindowsAudioKeys)에 "
+                + "설치한 경우에만 켤 수 있습니다. " + check.ReasonKo;
+        }
+
         // Reads the real task state. Never throws: failures are returned as an
         // Unreadable state so the UI cannot present them as a successful "off".
         public static StartupTaskState QueryState()
@@ -376,9 +437,13 @@ namespace GameAudioKeys
             try
             {
                 StartupTaskDefinition definition = CreateDefinition();
-                return StartupTaskInspector.Evaluate(
+                StartupTaskState state = StartupTaskInspector.Evaluate(
                     StartupTaskService.Query(definition.TaskName),
                     definition);
+
+                ApplyLocationWarning(state);
+
+                return state;
             }
             catch (Exception ex)
             {
@@ -433,6 +498,18 @@ namespace GameAudioKeys
                 result.MessageKo = plan.MessageKo;
                 result.State = state;
                 return result;
+            }
+
+            // 등록(켜기·다시 등록)은 안전한 설치 위치에서만 허용한다. 끄기(삭제)는 항상 허용한다.
+            if (plan.Action == StartupApplyAction.Register)
+            {
+                InstallLocationCheck location = CheckInstallLocation();
+                if (!location.Safe)
+                {
+                    result.MessageKo = UnsafeLocationMessage(location);
+                    result.State = state;
+                    return result;
+                }
             }
 
             try
@@ -498,6 +575,18 @@ namespace GameAudioKeys
             {
                 result.MessageKo = "자동 시작 작업 정보를 만들지 못했습니다: " + StartupTaskService.Describe(ex);
                 return result;
+            }
+
+            // 켜기 요청은 UAC 승인을 묻기 전에 위치부터 확인한다(관리자 도우미도 다시 확인한다).
+            if (enable)
+            {
+                InstallLocationCheck location = CheckInstallLocation();
+                if (!location.Safe)
+                {
+                    result.MessageKo = UnsafeLocationMessage(location);
+                    result.State = QueryState();
+                    return result;
+                }
             }
 
             ProcessStartInfo info = new ProcessStartInfo();

@@ -109,6 +109,42 @@ namespace GameAudioKeys.Core
         [DllImport("user32.dll", SetLastError = true)]
         public static extern bool UnhookWinEvent(IntPtr winEventHook);
 
+        public const uint PM_NOREMOVE = 0x0000;
+        public const uint PM_REMOVE = 0x0001;
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct MSG
+        {
+            public IntPtr hwnd;
+            public uint message;
+            public IntPtr wParam;
+            public IntPtr lParam;
+            public uint time;
+            public int ptX;
+            public int ptY;
+        }
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        public static extern bool PeekMessage(out MSG msg, IntPtr hWnd, uint filterMin, uint filterMax, uint removeFlags);
+
+        // 길게 눌러 쌓인 같은 단축키의 반복 WM_HOTKEY를 버린다. 다른 단축키가 큐 맨 앞에
+        // 오면 멈춰 그 입력은 순서대로 처리되게 둔다. 버린 개수를 돌려준다(최대 limit).
+        public static int DiscardQueuedHotkeys(IntPtr window, int hotkeyId, int limit)
+        {
+            int discarded = 0;
+            MSG msg;
+            while (discarded < limit
+                && PeekMessage(out msg, window, (uint)WM_HOTKEY, (uint)WM_HOTKEY, PM_NOREMOVE)
+                && msg.wParam.ToInt64() == hotkeyId)
+            {
+                PeekMessage(out msg, window, (uint)WM_HOTKEY, (uint)WM_HOTKEY, PM_REMOVE);
+                discarded++;
+            }
+
+            return discarded;
+        }
+
         public static int GetForegroundProcessId()
         {
             IntPtr window = GetForegroundWindow();
@@ -1113,17 +1149,33 @@ namespace GameAudioKeys.Core
         // 교차 프로세스·시스템 사운드 여부만 읽고, 음소거·볼륨·인스턴스 ID는 선택된
         // 세션에 대해 TryRefreshOriginals가 쓰기 직전에 다시 읽으므로 생략한다.
         // probe 진단은 기존 오버로드(readValues=true)를 그대로 사용한다.
+        // 단축키 경로(readValues=false)에서는 장치 열거자를 스레드마다 하나 만들어 재사용한다.
+        // 장치·세션 목록은 매번 새로 읽으므로 결과는 같고, 키 입력마다 COM 객체 생성만 줄어든다.
+        // 오디오 서비스 재시작 등으로 열거자가 무효가 되면 버리고 한 번 새로 만든다.
+        [ThreadStatic]
+        private static IMMDeviceEnumerator cachedEnumerator;
+
         public static List<AudioSession> EnumerateAll(out List<EndpointInfo> endpoints, bool readValues)
         {
             endpoints = new List<EndpointInfo>();
             List<AudioSession> all = new List<AudioSession>();
 
+            bool useCache = !readValues;
             IMMDeviceEnumerator enumerator = null;
             IMMDeviceCollection collection = null;
             try
             {
-                enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
-                int hr = enumerator.EnumAudioEndpoints(EDataFlow.eRender, DeviceState.ACTIVE, out collection);
+                int hr;
+                if (useCache)
+                {
+                    hr = TryEnumerateWithCachedEnumerator(out enumerator, out collection);
+                }
+                else
+                {
+                    enumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
+                    hr = enumerator.EnumAudioEndpoints(EDataFlow.eRender, DeviceState.ACTIVE, out collection);
+                }
+
                 if (hr != 0)
                 {
                     throw new AudioKeysException("EnumAudioEndpoints failed: 0x" + hr.ToString("X8", CultureInfo.InvariantCulture), ExitCodes.EnumerationFailed);
@@ -1179,10 +1231,77 @@ namespace GameAudioKeys.Core
             finally
             {
                 Release(collection);
-                Release(enumerator);
+                if (!useCache)
+                {
+                    Release(enumerator);
+                }
             }
 
             return all;
+        }
+
+        // 캐시된 열거자로 장치 목록을 얻는다. 실패(HRESULT 또는 예외)하면 캐시를 버리고
+        // 새 열거자로 한 번만 다시 시도한다. 열거자 자체는 호출자가 해제하지 않는다.
+        private static int TryEnumerateWithCachedEnumerator(
+            out IMMDeviceEnumerator enumerator,
+            out IMMDeviceCollection collection)
+        {
+            collection = null;
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                bool fresh = cachedEnumerator == null;
+                if (fresh)
+                {
+                    cachedEnumerator = (IMMDeviceEnumerator)new MMDeviceEnumeratorComObject();
+                }
+
+                enumerator = cachedEnumerator;
+
+                // 앞선 시도가 실패하면서 목록을 돌려줬다면 다시 시도하기 전에 해제한다.
+                if (collection != null)
+                {
+                    Release(collection);
+                    collection = null;
+                }
+
+                int hr;
+                try
+                {
+                    hr = enumerator.EnumAudioEndpoints(EDataFlow.eRender, DeviceState.ACTIVE, out collection);
+                }
+                catch (Exception)
+                {
+                    DropCachedEnumerator();
+                    if (fresh || attempt == 1)
+                    {
+                        throw;
+                    }
+
+                    continue;
+                }
+
+                if (hr == 0 || fresh || attempt == 1)
+                {
+                    if (hr != 0)
+                    {
+                        DropCachedEnumerator();
+                    }
+
+                    return hr;
+                }
+
+                DropCachedEnumerator();
+            }
+
+            enumerator = null;
+            return unchecked((int)0x80004005); // E_FAIL (도달하지 않음)
+        }
+
+        private static void DropCachedEnumerator()
+        {
+            IMMDeviceEnumerator stale = cachedEnumerator;
+            cachedEnumerator = null;
+            Release(stale);
         }
 
         private static void EnumerateEndpoint(IMMDevice device, EndpointInfo endpoint, bool readValues)

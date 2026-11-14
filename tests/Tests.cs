@@ -82,6 +82,444 @@ namespace GameAudioKeys.Tests
             TestStartupTaskIdentityRoundTrip();
             TestStartupApplyPlanner();
             TestStartupTaskPlatformXml();
+            TestReleaseVersionParsing();
+            TestReleaseVersionOrdering();
+            TestLatestReleaseParsing();
+            TestUpdateEvaluation();
+            TestReleasePageUrl();
+            TestUpdateCheckSetting(temporaryDirectory);
+            TestInstallLocationRules();
+            TestInstallLocationEvaluate();
+            TestInstallLocationReal(temporaryDirectory);
+            TestStartupLocationWarning();
+        }
+
+        // 보안 경고는 지금 실행 중인 exe가 아니라 작업에 등록된 exe 경로로 판단해야 한다.
+        private static void TestStartupLocationWarning()
+        {
+            const string sid = "S-1-5-21-1004336348-1177238915-682003330-1001";
+            const string safeDir = @"C:\Program Files\WindowsAudioKeys";
+            const string unsafeDir = @"C:\Users\me\AppData\Local\Programs\WindowsAudioKeys";
+            StartupTaskDefinition current = new StartupTaskDefinition(sid, safeDir + @"\WindowsAudioKeys.exe", safeDir, "--startup");
+            StartupTaskDefinition old = new StartupTaskDefinition(sid, unsafeDir + @"\WindowsAudioKeys.exe", unsafeDir, "--startup");
+
+            Func<string, InstallLocationCheck> fakeCheck = delegate(string path)
+            {
+                return path.StartsWith(@"C:\Program Files\", StringComparison.OrdinalIgnoreCase)
+                    ? InstallLocationCheck.Ok()
+                    : InstallLocationCheck.Unsafe("outside Program Files: " + path);
+            };
+
+            // 안전한 위치의 새 복사본을 실행 중이지만, 남은 작업은 예전(수정 가능) 위치를 실행한다.
+            StartupTaskState stale = StartupTaskInspector.Evaluate(MatchingSnapshot(old), current);
+            Check("location-warning-registered-path",
+                stale.Kind == StartupTaskStateKind.NeedsRefresh
+                && string.Equals(stale.RegisteredExecutablePath, unsafeDir + @"\WindowsAudioKeys.exe", StringComparison.OrdinalIgnoreCase),
+                stale.RegisteredExecutablePath ?? "(null)");
+            StartupTaskHost.ApplyLocationWarning(stale, fakeCheck);
+            Check("location-warning-stale-task-flagged",
+                stale.LocationWarningKo != null && stale.IsError && stale.MessageKo.StartsWith("보안 경고", StringComparison.Ordinal),
+                stale.MessageKo);
+
+            // 반대로, 위험한 위치의 복사본을 실행 중이어도 작업이 안전한 위치를 가리키면 경고하지 않는다.
+            StartupTaskState safeTask = StartupTaskInspector.Evaluate(MatchingSnapshot(current), old);
+            StartupTaskHost.ApplyLocationWarning(safeTask, fakeCheck);
+            Check("location-warning-safe-task-quiet", safeTask.LocationWarningKo == null, safeTask.MessageKo);
+
+            // 일치하고 켜진 작업이 위험한 위치면 경고한다.
+            StartupTaskState enabledUnsafe = StartupTaskInspector.Evaluate(MatchingSnapshot(old), old);
+            StartupTaskHost.ApplyLocationWarning(enabledUnsafe, fakeCheck);
+            Check("location-warning-enabled-unsafe",
+                enabledUnsafe.Kind == StartupTaskStateKind.Enabled && enabledUnsafe.LocationWarningKo != null,
+                enabledUnsafe.MessageKo);
+
+            // 꺼진 작업은 실행되지 않으므로 경고하지 않는다.
+            StartupTaskSnapshot disabledSnapshot = MatchingSnapshot(old);
+            disabledSnapshot.TaskEnabled = false;
+            StartupTaskState disabled = StartupTaskInspector.Evaluate(disabledSnapshot, old);
+            StartupTaskHost.ApplyLocationWarning(disabled, fakeCheck);
+            Check("location-warning-disabled-quiet", disabled.LocationWarningKo == null, disabled.MessageKo);
+
+            // 검사 함수가 예외를 던지면 안전하지 않은 것으로 본다.
+            StartupTaskState throwing = StartupTaskInspector.Evaluate(MatchingSnapshot(current), current);
+            StartupTaskHost.ApplyLocationWarning(throwing, delegate(string p) { throw new IOException("x"); });
+            Check("location-warning-check-throws", throwing.LocationWarningKo != null, "fail closed");
+        }
+
+        private const string UserSid = "S-1-5-21-1000-2000-3000-1001";
+        private const string UsersSid = "S-1-5-32-545";
+        private const string AuthenticatedUsersSid = "S-1-5-11";
+        private const string CreatorOwnerSid = "S-1-3-0";
+
+        // Program Files 기본 권한과 비슷한 항목: 관리자·시스템 전체, 사용자 읽기/실행,
+        // CREATOR OWNER는 상속 전용.
+        private static List<AccessEntry> ProtectedEntries()
+        {
+            List<AccessEntry> entries = new List<AccessEntry>();
+            entries.Add(new AccessEntry(InstallLocation.TrustedInstallerSid, true, false, 0x1F01FF));
+            entries.Add(new AccessEntry(InstallLocation.SystemSid, true, false, 0x1301BF));
+            entries.Add(new AccessEntry(InstallLocation.AdministratorsSid, true, false, 0x1301BF));
+            entries.Add(new AccessEntry(UsersSid, true, false, 0x1200A9));
+            entries.Add(new AccessEntry(UsersSid, true, true, unchecked((int)0xA0000000)));
+            entries.Add(new AccessEntry(CreatorOwnerSid, true, true, 0x10000000));
+            return entries;
+        }
+
+        private static void TestInstallLocationRules()
+        {
+            string sid;
+            Check("install-acl-protected", !InstallLocation.GrantsWriteToUntrusted(ProtectedEntries(), out sid), sid);
+
+            List<AccessEntry> usersModify = ProtectedEntries();
+            usersModify.Add(new AccessEntry(UsersSid, true, false, 0x1301BF));
+            Check("install-acl-users-modify", InstallLocation.GrantsWriteToUntrusted(usersModify, out sid) && sid == UsersSid, sid);
+
+            List<AccessEntry> userAppend = ProtectedEntries();
+            userAppend.Add(new AccessEntry(UserSid, true, false, 0x4));
+            Check("install-acl-user-append", InstallLocation.GrantsWriteToUntrusted(userAppend, out sid), "create subfolder");
+
+            List<AccessEntry> authDelete = ProtectedEntries();
+            authDelete.Add(new AccessEntry(AuthenticatedUsersSid, true, false, 0x10000));
+            Check("install-acl-delete", InstallLocation.GrantsWriteToUntrusted(authDelete, out sid), "delete right");
+
+            List<AccessEntry> genericWrite = ProtectedEntries();
+            genericWrite.Add(new AccessEntry(UserSid, true, false, 0x40000000));
+            Check("install-acl-generic-write", InstallLocation.GrantsWriteToUntrusted(genericWrite, out sid), "GENERIC_WRITE");
+
+            List<AccessEntry> denyOnly = ProtectedEntries();
+            denyOnly.Add(new AccessEntry(UsersSid, false, false, 0x1F01FF));
+            Check("install-acl-deny-ignored", !InstallLocation.GrantsWriteToUntrusted(denyOnly, out sid), "deny ACE");
+
+            Check("install-root-under", InstallLocation.IsUnderRoot(@"C:\Program Files\App\a.exe", @"C:\Program Files"), "child");
+            Check("install-root-case", InstallLocation.IsUnderRoot(@"c:\program files\App\a.exe", @"C:\Program Files\"), "case/trailing");
+            Check("install-root-prefix-trap", !InstallLocation.IsUnderRoot(@"C:\Program Files Evil\a.exe", @"C:\Program Files"), "sibling prefix");
+            Check("install-root-null", !InstallLocation.IsUnderRoot(null, @"C:\Program Files"), "null");
+        }
+
+        // 가짜 파일 시스템: 경로별 보안 정보. 없는 경로는 존재하지 않는 것으로 본다.
+        private static Func<string, bool, SecuritySnapshot> FakeSecurity(Dictionary<string, SecuritySnapshot> items)
+        {
+            return delegate(string path, bool isDirectory)
+            {
+                SecuritySnapshot snapshot;
+                if (items.TryGetValue(path, out snapshot))
+                {
+                    return snapshot;
+                }
+
+                SecuritySnapshot missing = new SecuritySnapshot();
+                missing.Exists = false;
+                return missing;
+            };
+        }
+
+        private static SecuritySnapshot Item(string owner, List<AccessEntry> entries)
+        {
+            SecuritySnapshot snapshot = new SecuritySnapshot();
+            snapshot.Exists = true;
+            snapshot.OwnerSid = owner;
+            snapshot.Entries = entries;
+            return snapshot;
+        }
+
+        private static Dictionary<string, SecuritySnapshot> SafeTree()
+        {
+            Dictionary<string, SecuritySnapshot> items = new Dictionary<string, SecuritySnapshot>(StringComparer.OrdinalIgnoreCase);
+            items[@"C:\Program Files"] = Item(InstallLocation.TrustedInstallerSid, ProtectedEntries());
+            items[@"C:\Program Files\Vendor"] = Item(InstallLocation.AdministratorsSid, ProtectedEntries());
+            items[@"C:\Program Files\Vendor\WAK"] = Item(InstallLocation.AdministratorsSid, ProtectedEntries());
+            items[@"C:\Program Files\Vendor\WAK\WindowsAudioKeys.exe"] = Item(InstallLocation.AdministratorsSid, ProtectedEntries());
+            items[@"C:\Program Files\Vendor\WAK\WindowsAudioKeys.exe.config"] = Item(InstallLocation.AdministratorsSid, ProtectedEntries());
+            return items;
+        }
+
+        private static void TestInstallLocationEvaluate()
+        {
+            string exe = @"C:\Program Files\Vendor\WAK\WindowsAudioKeys.exe";
+            List<string> roots = new List<string>();
+            roots.Add(@"C:\Program Files");
+            roots.Add(@"C:\Program Files (x86)");
+
+            InstallLocationCheck check = InstallLocation.Evaluate(exe, roots, FakeSecurity(SafeTree()));
+            Check("install-eval-safe", check.Safe, check.ReasonKo);
+
+            Dictionary<string, SecuritySnapshot> noConfig = SafeTree();
+            noConfig.Remove(exe + ".config");
+            check = InstallLocation.Evaluate(exe, roots, FakeSecurity(noConfig));
+            Check("install-eval-missing-config-ok", check.Safe, check.ReasonKo);
+
+            check = InstallLocation.Evaluate(@"C:\Users\me\AppData\Local\Programs\WAK\WindowsAudioKeys.exe", roots, FakeSecurity(SafeTree()));
+            Check("install-eval-outside-root", !check.Safe && check.ReasonKo.IndexOf("Program Files", StringComparison.Ordinal) >= 0, check.ReasonKo);
+
+            Dictionary<string, SecuritySnapshot> userOwnedExe = SafeTree();
+            userOwnedExe[exe] = Item(UserSid, ProtectedEntries());
+            check = InstallLocation.Evaluate(exe, roots, FakeSecurity(userOwnedExe));
+            Check("install-eval-user-owned-exe", !check.Safe, "owner can rewrite the DACL");
+
+            Dictionary<string, SecuritySnapshot> writableConfig = SafeTree();
+            List<AccessEntry> configEntries = ProtectedEntries();
+            configEntries.Add(new AccessEntry(UsersSid, true, false, 0x2));
+            writableConfig[exe + ".config"] = Item(InstallLocation.AdministratorsSid, configEntries);
+            check = InstallLocation.Evaluate(exe, roots, FakeSecurity(writableConfig));
+            Check("install-eval-writable-config", !check.Safe, "config injection");
+
+            Dictionary<string, SecuritySnapshot> writableFolder = SafeTree();
+            List<AccessEntry> folderEntries = ProtectedEntries();
+            folderEntries.Add(new AccessEntry(AuthenticatedUsersSid, true, false, 0x1301BF));
+            writableFolder[@"C:\Program Files\Vendor\WAK"] = Item(InstallLocation.AdministratorsSid, folderEntries);
+            check = InstallLocation.Evaluate(exe, roots, FakeSecurity(writableFolder));
+            Check("install-eval-writable-folder", !check.Safe, "DLL planting");
+
+            Dictionary<string, SecuritySnapshot> writableAncestor = SafeTree();
+            writableAncestor[@"C:\Program Files\Vendor"] = Item(UserSid, ProtectedEntries());
+            check = InstallLocation.Evaluate(exe, roots, FakeSecurity(writableAncestor));
+            Check("install-eval-user-owned-ancestor", !check.Safe, "folder swap");
+
+            Dictionary<string, SecuritySnapshot> junction = SafeTree();
+            junction[@"C:\Program Files\Vendor\WAK"].IsReparsePoint = true;
+            check = InstallLocation.Evaluate(exe, roots, FakeSecurity(junction));
+            Check("install-eval-reparse-point", !check.Safe, "junction");
+
+            Dictionary<string, SecuritySnapshot> unreadable = SafeTree();
+            unreadable[exe].ErrorKo = "access denied";
+            check = InstallLocation.Evaluate(exe, roots, FakeSecurity(unreadable));
+            Check("install-eval-unreadable", !check.Safe, "fail closed");
+
+            Dictionary<string, SecuritySnapshot> missingExe = SafeTree();
+            missingExe.Remove(exe);
+            check = InstallLocation.Evaluate(exe, roots, FakeSecurity(missingExe));
+            Check("install-eval-missing-exe", !check.Safe, "exe must exist");
+
+            check = InstallLocation.Evaluate(exe, roots, delegate(string p, bool d) { throw new UnauthorizedAccessException("x"); });
+            Check("install-eval-reader-throws", !check.Safe, "fail closed on exception");
+
+            check = InstallLocation.Evaluate(null, roots, FakeSecurity(SafeTree()));
+            Check("install-eval-null", !check.Safe, "null path");
+
+            string[] unresolved =
+            {
+                "WindowsAudioKeys.exe",
+                @"Vendor\WAK\WindowsAudioKeys.exe",
+                @"C:Program Files\Vendor\WAK\WindowsAudioKeys.exe",
+                @"%ProgramFiles%\Vendor\WAK\WindowsAudioKeys.exe",
+                @"C:\Program Files\%X%\WAK\WindowsAudioKeys.exe",
+                @"\\server\share\WindowsAudioKeys.exe"
+            };
+            for (int i = 0; i < unresolved.Length; i++)
+            {
+                check = InstallLocation.Evaluate(unresolved[i], roots, FakeSecurity(SafeTree()));
+                Check("install-eval-unresolved-" + i.ToString(CultureInfo.InvariantCulture), !check.Safe, unresolved[i]);
+            }
+        }
+
+        // 실제 파일 시스템: 임시 폴더(사용자 소유)의 실행 파일은 항상 거부된다.
+        private static void TestInstallLocationReal(string temporaryDirectory)
+        {
+            string exe = Path.Combine(temporaryDirectory, "install-real", "WindowsAudioKeys.exe");
+            Directory.CreateDirectory(Path.GetDirectoryName(exe));
+            File.WriteAllText(exe, "x");
+            InstallLocationCheck check = InstallLocation.CheckCurrent(exe);
+            Check("install-real-temp-refused", !check.Safe && !string.IsNullOrEmpty(check.ReasonKo), check.ReasonKo);
+        }
+
+        // 새 버전 알림: 태그 형식은 "v주.부.수정" 또는 "주.부.수정"만 허용한다.
+        private static void TestReleaseVersionParsing()
+        {
+            string[] accepted = { "1.2.3", "v1.2.3", "0.0.0", "v99999.0.1", "v10.20.30" };
+            foreach (string text in accepted)
+            {
+                ReleaseVersion version;
+                Check("release-version-accept " + text, ReleaseVersion.TryParse(text, out version) && version != null, text);
+            }
+
+            string[] rejected =
+            {
+                null, "", " 1.2.3", "1.2.3 ", "V1.2.3", "vv1.2.3", "1.2", "1.2.3.4", "v01.2.3", "1.02.3",
+                "1.2.03", "1.2.3-beta", "100000.0.0", "a.b.c", "1..3", "v", "-1.2.3", "1.2.3\n"
+            };
+            foreach (string text in rejected)
+            {
+                ReleaseVersion version;
+                Check("release-version-reject " + (text == null ? "(null)" : text.Replace("\n", "\\n")),
+                    !ReleaseVersion.TryParse(text, out version) && version == null,
+                    "must reject");
+            }
+
+            ReleaseVersion parsed;
+            ReleaseVersion.TryParse("v12.0.7", out parsed);
+            Check("release-version-tostring", parsed != null && parsed.ToString() == "12.0.7", "canonical form without v");
+        }
+
+        private static void TestReleaseVersionOrdering()
+        {
+            Check("release-version-order-patch", Ver("1.2.10").CompareTo(Ver("1.2.9")) > 0, "numeric, not lexical");
+            Check("release-version-order-major", Ver("2.0.0").CompareTo(Ver("1.99.99")) > 0, "major first");
+            Check("release-version-order-minor", Ver("1.3.0").CompareTo(Ver("1.2.99")) > 0, "minor before patch");
+            Check("release-version-equal", Ver("v1.0.0").CompareTo(Ver("1.0.0")) == 0, "prefix ignored");
+            Check("release-version-null", Ver("1.0.0").CompareTo(null) > 0, "null sorts first");
+        }
+
+        private static ReleaseVersion Ver(string text)
+        {
+            ReleaseVersion version;
+            if (!ReleaseVersion.TryParse(text, out version))
+            {
+                throw new ArgumentException("test version must parse: " + text);
+            }
+
+            return version;
+        }
+
+        private static void TestLatestReleaseParsing()
+        {
+            LatestRelease release;
+            string error;
+
+            bool ok = UpdateCheckLogic.TryParseLatestRelease(
+                "{\"tag_name\":\"v1.1.0\",\"draft\":false,\"prerelease\":false,\"html_url\":\"https://evil.example/\",\"assets\":[{\"name\":\"x\"}]}",
+                out release,
+                out error);
+            Check("update-json-valid", ok && release.TagName == "v1.1.0" && !release.Draft && !release.Prerelease, error);
+
+            ok = UpdateCheckLogic.TryParseLatestRelease("{\"tag_name\":\"v1.1.0\"}", out release, out error);
+            Check("update-json-optional-flags", ok && !release.Draft && !release.Prerelease, error);
+
+            ok = UpdateCheckLogic.TryParseLatestRelease("{\"tag_name\":\"v1.1.0\",\"draft\":true}", out release, out error);
+            Check("update-json-draft-read", ok && release.Draft, error);
+
+            string[] invalid =
+            {
+                null, "", "{", "[]", "\"v1.1.0\"", "{\"name\":\"v1.1.0\"}", "{\"tag_name\":110}",
+                "{\"tag_name\":null}", "{\"tag_name\":\"v1.1.0\",\"draft\":\"no\"}",
+                "{\"tag_name\":\"v1.1.0\",\"prerelease\":1}"
+            };
+            for (int i = 0; i < invalid.Length; i++)
+            {
+                ok = UpdateCheckLogic.TryParseLatestRelease(invalid[i], out release, out error);
+                Check("update-json-invalid-" + i.ToString(CultureInfo.InvariantCulture),
+                    !ok && release == null && !string.IsNullOrEmpty(error),
+                    invalid[i] ?? "(null)");
+            }
+        }
+
+        private static void TestUpdateEvaluation()
+        {
+            ReleaseVersion current = Ver("1.0.0");
+            ReleaseVersion latest;
+
+            Check("update-eval-available",
+                UpdateCheckLogic.Evaluate(current, Release("v1.1.0", false, false), out latest) == UpdateStatus.UpdateAvailable
+                && latest.ToString() == "1.1.0",
+                "newer tag is an update");
+            Check("update-eval-uptodate",
+                UpdateCheckLogic.Evaluate(current, Release("v1.0.0", false, false), out latest) == UpdateStatus.UpToDate,
+                "same version");
+            Check("update-eval-local-newer",
+                UpdateCheckLogic.Evaluate(Ver("2.0.0"), Release("v1.9.9", false, false), out latest) == UpdateStatus.LocalNewer,
+                "local build ahead of the release");
+            Check("update-eval-draft",
+                UpdateCheckLogic.Evaluate(current, Release("v9.0.0", true, false), out latest) == UpdateStatus.Invalid && latest == null,
+                "drafts are ignored");
+            Check("update-eval-prerelease",
+                UpdateCheckLogic.Evaluate(current, Release("v9.0.0", false, true), out latest) == UpdateStatus.Invalid,
+                "prereleases are ignored");
+            Check("update-eval-bad-tag",
+                UpdateCheckLogic.Evaluate(current, Release("latest", false, false), out latest) == UpdateStatus.Invalid,
+                "unparsable tag");
+            Check("update-eval-null-current",
+                UpdateCheckLogic.Evaluate(null, Release("v1.1.0", false, false), out latest) == UpdateStatus.Invalid,
+                "unknown current version");
+
+            UpdateCheckResult result = UpdateCheckLogic.BuildResult(current, Release("v1.2.0", false, false));
+            Check("update-result-available",
+                result.Success && result.Status == UpdateStatus.UpdateAvailable && result.Latest.ToString() == "1.2.0",
+                result.MessageKo);
+            result = UpdateCheckLogic.BuildResult(current, Release("garbage", false, false));
+            Check("update-result-invalid-failure",
+                !result.Success && !string.IsNullOrEmpty(result.MessageKo),
+                "invalid release info must be reported as a failure");
+            Check("update-current-version",
+                UpdateCheckLogic.CurrentVersion("1.0.0") != null && UpdateCheckLogic.CurrentVersion("0.0.0.0") == null,
+                "product version must be major.minor.patch");
+        }
+
+        private static LatestRelease Release(string tag, bool draft, bool prerelease)
+        {
+            LatestRelease release = new LatestRelease();
+            release.TagName = tag;
+            release.Draft = draft;
+            release.Prerelease = prerelease;
+            return release;
+        }
+
+        // 앱이 여는 주소는 저장소 릴리스 태그 페이지 하나뿐이다.
+        private static void TestReleasePageUrl()
+        {
+            string url = UpdateCheckLogic.ReleasePageUrl(Ver("1.2.3"));
+            Check("release-url-format",
+                url == "https://github.com/devbattery/windows-audio-keys/releases/tag/v1.2.3",
+                url);
+            Check("release-url-allowed", UpdateCheckLogic.IsAllowedReleaseUrl(url), url);
+
+            string[] blocked =
+            {
+                null,
+                "",
+                "https://evil.example/",
+                "https://github.com/devbattery/windows-audio-keys-evil/releases/tag/v1.2.3",
+                "https://github.com/devbattery/windows-audio-keys/releases/tag/v1.2.3 --flag",
+                "https://github.com/devbattery/windows-audio-keys/releases/tag/v1.2.3\"",
+                "https://github.com/devbattery/windows-audio-keys/releases/tag/v1.2.3/../../x",
+                "https://github.com/devbattery/windows-audio-keys/releases/tag/1.2.3",
+                "https://github.com/devbattery/windows-audio-keys/releases/tag/v01.2.3",
+                "https://github.com/devbattery/windows-audio-keys/releases/latest",
+                "http://github.com/devbattery/windows-audio-keys/releases/tag/v1.2.3",
+                "HTTPS://GITHUB.COM/devbattery/windows-audio-keys/releases/tag/v1.2.3"
+            };
+            for (int i = 0; i < blocked.Length; i++)
+            {
+                Check("release-url-blocked-" + i.ToString(CultureInfo.InvariantCulture),
+                    !UpdateCheckLogic.IsAllowedReleaseUrl(blocked[i]),
+                    blocked[i] ?? "(null)");
+            }
+        }
+
+        // 자동 확인 설정: 기존 파일(키 없음)은 켜짐, 저장 왕복, 변경 감지·복제에 반영.
+        private static void TestUpdateCheckSetting(string temporaryDirectory)
+        {
+            string path = Path.Combine(temporaryDirectory, "update-setting", "settings.json");
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            string legacyJson =
+                "{\"version\":1,"
+                + "\"mute\":{\"key\":46,\"ctrl\":false,\"alt\":false,\"shift\":false},"
+                + "\"volumeUp\":{\"key\":33,\"ctrl\":false,\"alt\":false,\"shift\":false},"
+                + "\"volumeDown\":{\"key\":34,\"ctrl\":false,\"alt\":false,\"shift\":false},"
+                + "\"step\":5,\"enabled\":true}";
+            File.WriteAllText(path, legacyJson, new UTF8Encoding(false));
+
+            SettingsLoadResult legacy = SettingsStore.Load(path);
+            Check("update-setting-legacy-default-on",
+                !legacy.Corrupt && legacy.Settings.CheckForUpdates,
+                legacy.StatusKo);
+
+            AppSettings off = legacy.Settings.Clone();
+            off.CheckForUpdates = false;
+            string error;
+            Check("update-setting-save", SettingsStore.TrySave(path, off, out error), error);
+            SettingsLoadResult reloaded = SettingsStore.Load(path);
+            Check("update-setting-roundtrip-off",
+                !reloaded.Corrupt && !reloaded.Settings.CheckForUpdates,
+                reloaded.StatusKo);
+            Check("update-setting-file-key",
+                File.ReadAllText(path, Encoding.UTF8).IndexOf("\"checkForUpdates\":false", StringComparison.Ordinal) >= 0,
+                "the key is written explicitly");
+
+            Check("update-setting-defaults-on", AppSettings.CreateDefaults().CheckForUpdates, "default is on");
+            Check("update-setting-clone", !off.Clone().CheckForUpdates, "clone copies the flag");
+            Check("update-setting-equivalence",
+                !AppSettings.AreEquivalent(off, legacy.Settings)
+                && AppSettings.AreEquivalent(off, off.Clone()),
+                "only the update flag differs");
         }
 
         private static void TestStartupLaunchPolicy()

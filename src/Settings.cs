@@ -186,6 +186,9 @@ namespace GameAudioKeys
         public int Step;
         public bool Enabled;
 
+        // 새 버전 자동 확인 여부. 설정 창 스위치로 즉시 저장되며 기본값은 켜짐이다.
+        public bool CheckForUpdates = true;
+
         public static AppSettings CreateDefaults()
         {
             AppSettings settings = new AppSettings();
@@ -194,6 +197,7 @@ namespace GameAudioKeys
             settings.VolumeDown = new HotkeyBinding(0x22, false, false, false); // Page Down
             settings.Step = 5;
             settings.Enabled = true;
+            settings.CheckForUpdates = true;
             return settings;
         }
 
@@ -205,6 +209,7 @@ namespace GameAudioKeys
             copy.VolumeDown = this.VolumeDown == null ? null : this.VolumeDown.Clone();
             copy.Step = this.Step;
             copy.Enabled = this.Enabled;
+            copy.CheckForUpdates = this.CheckForUpdates;
             return copy;
         }
 
@@ -220,7 +225,8 @@ namespace GameAudioKeys
                 && SameBinding(left.VolumeUp, right.VolumeUp)
                 && SameBinding(left.VolumeDown, right.VolumeDown)
                 && left.Step == right.Step
-                && left.Enabled == right.Enabled;
+                && left.Enabled == right.Enabled
+                && left.CheckForUpdates == right.CheckForUpdates;
         }
 
         private static bool SameBinding(HotkeyBinding left, HotkeyBinding right)
@@ -406,6 +412,10 @@ namespace GameAudioKeys
         public BindingJson volumeDown;
         public int step = 5;
         public bool enabled = true;
+
+        // 1.1.0에서 추가. 이 키가 없는 기존 파일은 초기값(true)으로 읽힌다.
+        // 형식 버전(version)은 그대로 두어 구버전 앱도 이 파일을 읽을 수 있다.
+        public bool checkForUpdates = true;
     }
 
     internal sealed class SettingsLoadResult
@@ -615,6 +625,7 @@ namespace GameAudioKeys
             json.volumeDown = ToJson(settings.VolumeDown);
             json.step = settings.Step;
             json.enabled = settings.Enabled;
+            json.checkForUpdates = settings.CheckForUpdates;
             return json;
         }
 
@@ -641,6 +652,7 @@ namespace GameAudioKeys
             settings.VolumeDown = FromJson(json.volumeDown);
             settings.Step = json.step;
             settings.Enabled = json.enabled;
+            settings.CheckForUpdates = json.checkForUpdates;
             return settings;
         }
 
