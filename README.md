@@ -281,9 +281,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
 
 빌드 순서:
 
-1. `bin`에 앱, 테스트, 진단 프로브, 오디오 픽스처를 컴파일합니다.
-2. `-Test`를 지정하면 진단 프로브 자체 테스트와 앱 테스트를 먼저 실행합니다.
-3. 모두 성공하면 `bin`의 앱과 설정 파일을 루트의
+1. 앱이 실행 중에 그리는 아이콘과 같은 코드(`src\AppIcons.cs`)로
+   `bin\WindowsAudioKeys.ico`(16~256px)를 만들어 실행 파일에 내장합니다. 별도
+   `.ico` 원본 파일은 없습니다.
+2. `bin`에 앱, 테스트, 진단 프로브, 오디오 픽스처를 컴파일합니다.
+3. `-Test`를 지정하면 진단 프로브 자체 테스트와 앱 테스트를 먼저 실행합니다.
+4. 모두 성공하면 `bin`의 앱과 설정 파일을 루트의
    `WindowsAudioKeys.exe` / `WindowsAudioKeys.exe.config`로 복사합니다.
 
 `WindowsAudioKeys.exe`가 실행 중이면 빌드는 사용자 프로세스를 종료하지 않고
@@ -296,14 +299,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1 -Test
 ```
 
 - `AudioProbe.exe --self-test`: 진단 프로브의 26개 순수 로직 검증.
-- `GameAudioKeys.Tests.exe`: 304개 검증. 대상 프레임워크(.NET Framework 4.8) 선언, 기본값, 볼륨 클램프와 경계, 다중 세션
+- `GameAudioKeys.Tests.exe`: 317개 검증. 대상 프레임워크(.NET Framework 4.8) 선언, 기본값, 볼륨 클램프와 경계, 다중 세션
   토글 결정, 중복/예약/잘못된 단축키, 설정 왕복, 손상/무효 설정 보존, 저장 시
   `.invalid-*.bak` 보존, 공유 대상 선택 로직, 프로세스 스냅샷 생략 판단,
   미저장 변경 감지, 키 녹화 판정, 테마 값 해석에 더해 자동 시작 인수 조합,
   작업 XML의 사용자/권한/트리거/경로/이스케이프, 소유/외부 작업 구분,
   누락/읽기 실패 상태, 계정 이름/SID 정규화, 적용 계획, 릴리스 버전 해석·비교,
   GitHub 응답 해석, 릴리스 주소 허용 검사, 업데이트 자동 확인 설정, 자동 시작 설치
-  위치(Program Files·소유자·쓰기 권한·링크·경로 정규화) 판정을 포함합니다.
+  위치(Program Files·소유자·쓰기 권한·링크·경로 정규화) 판정, 실행 파일 아이콘(.ico)
+  형식과 크기별 읽기를 포함합니다.
 - 테스트는 실제 작업 스케줄러 작업을 등록하거나 관리자 권한을 요청하지 않습니다.
   한 번의 비변경 플랫폼 검사에서만 생성된 XML을 실제
   `Schedule.Service.NewTask(0).XmlText`에 할당해 파싱/타입 계약을 확인하며,

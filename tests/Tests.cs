@@ -94,6 +94,7 @@ namespace GameAudioKeys.Tests
             TestInstallLocationReal(temporaryDirectory);
             TestStartupLocationWarning();
             TestStartupTaskNotFound();
+            TestAppIconFile();
         }
 
         // 작업이 없을 때(처음 켜는 경우) 조회는 "미등록"이어야 한다. dynamic COM 호출에서는
@@ -1762,6 +1763,105 @@ namespace GameAudioKeys.Tests
         private static bool Same(HotkeyBinding left, HotkeyBinding right)
         {
             return left != null && right != null && left.SameAs(right);
+        }
+
+        // 실행 파일에 내장하는 .ico: 모든 크기가 들어 있고, Windows가 각 크기를 읽을 수 있어야 한다.
+        private static void TestAppIconFile()
+        {
+            byte[] ico;
+            using (MemoryStream stream = new MemoryStream())
+            {
+                AppIcons.WriteIco(stream, AppIcons.Accent, AppIcons.StandardSizes);
+                ico = stream.ToArray();
+            }
+
+            int count = BitConverter.ToUInt16(ico, 4);
+            Check("icon-header",
+                BitConverter.ToUInt16(ico, 0) == 0 && BitConverter.ToUInt16(ico, 2) == 1
+                    && count == AppIcons.StandardSizes.Length,
+                "count=" + count.ToString(CultureInfo.InvariantCulture));
+
+            bool entriesValid = true;
+            string entryDetail = string.Empty;
+            for (int i = 0; i < count && entriesValid; i++)
+            {
+                int entry = 6 + (16 * i);
+                int width = ico[entry] == 0 ? 256 : ico[entry];
+                int bytes = BitConverter.ToInt32(ico, entry + 8);
+                int offset = BitConverter.ToInt32(ico, entry + 12);
+                entriesValid = width == AppIcons.StandardSizes[i]
+                    && BitConverter.ToUInt16(ico, entry + 6) == 32
+                    && bytes > 0 && offset > 0 && (long)offset + bytes <= ico.Length;
+                entryDetail = "entry " + i.ToString(CultureInfo.InvariantCulture) + " width=" + width.ToString(CultureInfo.InvariantCulture);
+            }
+
+            Check("icon-entries", entriesValid, entryDetail);
+
+            // 256 미만 DIB 항목: System.Drawing(Windows 아이콘 로더 사용)이 요청 크기를 그대로 골라 읽는지 확인한다.
+            // 256 PNG 항목: .NET Framework System.Drawing.Icon은 너비 바이트 0(=256) 항목을 고르지 못하므로
+            // PNG를 직접 디코드해 확인한다(탐색기·셸 로더는 이 항목을 읽는다).
+            for (int i = 0; i < AppIcons.StandardSizes.Length; i++)
+            {
+                int size = AppIcons.StandardSizes[i];
+                System.Drawing.Bitmap bitmap = null;
+                System.Drawing.Icon icon = null;
+                try
+                {
+                    if (size >= 256)
+                    {
+                        int bytes = BitConverter.ToInt32(ico, 6 + (16 * i) + 8);
+                        int offset = BitConverter.ToInt32(ico, 6 + (16 * i) + 12);
+                        bool pngSignature = ico[offset] == 0x89 && ico[offset + 1] == (byte)'P'
+                            && ico[offset + 2] == (byte)'N' && ico[offset + 3] == (byte)'G';
+                        Check("icon-png-signature-256", pngSignature, "entry is not PNG");
+                        bitmap = new System.Drawing.Bitmap(new MemoryStream(ico, offset, bytes));
+                    }
+                    else
+                    {
+                        icon = new System.Drawing.Icon(new MemoryStream(ico), size, size);
+                        bitmap = icon.ToBitmap();
+                    }
+
+                    // 모서리는 둥근 타일 밖이라 투명, 위쪽 가운데(타일 안쪽)는 불투명이어야 한다.
+                    bool sized = bitmap.Width == size && bitmap.Height == size;
+                    System.Drawing.Color corner = sized ? bitmap.GetPixel(0, 0) : System.Drawing.Color.Empty;
+                    System.Drawing.Color inside = sized ? bitmap.GetPixel(size / 2, size / 8) : System.Drawing.Color.Empty;
+                    Check("icon-load-" + size.ToString(CultureInfo.InvariantCulture),
+                        sized && corner.A == 0 && inside.A == 255,
+                        "width=" + bitmap.Width.ToString(CultureInfo.InvariantCulture)
+                            + " corner.A=" + corner.A.ToString(CultureInfo.InvariantCulture)
+                            + " inside.A=" + inside.A.ToString(CultureInfo.InvariantCulture));
+                }
+                finally
+                {
+                    if (bitmap != null)
+                    {
+                        bitmap.Dispose();
+                    }
+
+                    if (icon != null)
+                    {
+                        icon.Dispose();
+                    }
+                }
+            }
+
+            using (System.Drawing.Icon multi = AppIcons.CreateMultiSize(AppIcons.Accent))
+            {
+                Check("icon-multisize-handle", multi.Handle != IntPtr.Zero && multi.Width > 0, "no handle");
+            }
+
+            bool rejected = false;
+            try
+            {
+                AppIcons.WriteIco(new MemoryStream(), AppIcons.Accent, new int[] { 8 });
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                rejected = true;
+            }
+
+            Check("icon-rejects-invalid-size", rejected, "size 8 accepted");
         }
 
         private static bool Near(float left, float right)

@@ -80,7 +80,8 @@ namespace GameAudioKeys
             this.ClientSize = new Size(720, 800);
             this.MinimumSize = LogicalMinimumSize;
             this.Font = UiTheme.BodyFont();
-            this.windowIcon = AppIcons.Create(AppIcons.Accent, 32);
+            // 여러 크기를 담아 작업 표시줄·제목 표시줄·Alt+Tab이 DPI에 맞는 크기를 고르게 한다.
+            this.windowIcon = AppIcons.CreateMultiSize(AppIcons.Accent);
             this.Icon = this.windowIcon;
             this.ShowInTaskbar = true;
             this.MaximizeBox = true;
