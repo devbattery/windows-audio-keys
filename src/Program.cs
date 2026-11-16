@@ -43,6 +43,13 @@ namespace GameAudioKeys
                 return StartupTaskHost.RunHelper(command);
             }
 
+            // 제거 프로그램이 파일을 지우기 전에 호출한다. 실행 중인 인스턴스와 무관하게 동작해야 하므로
+            // 단일 실행 확인보다 먼저 처리한다.
+            if (command.Kind == StartupCommandKind.UninstallCleanup)
+            {
+                return StartupTaskHost.RunUninstallCleanup();
+            }
+
             if (command.HelpRequested)
             {
                 MessageBox.Show(

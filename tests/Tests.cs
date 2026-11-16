@@ -58,6 +58,7 @@ namespace GameAudioKeys.Tests
 
         private static void Run(string temporaryDirectory)
         {
+            TestTargetFramework();
             TestDefaults();
             TestVolume();
             TestToggleDecision();
@@ -93,6 +94,9 @@ namespace GameAudioKeys.Tests
             TestInstallLocationReal(temporaryDirectory);
             TestStartupLocationWarning();
             TestStartupTaskNotFound();
+            TestAppIconFile();
+            TestUninstallCleanupCommandLine();
+            TestUninstallCleanupSelection();
         }
 
         // 작업이 없을 때(처음 켜는 경우) 조회는 "미등록"이어야 한다. dynamic COM 호출에서는
@@ -339,6 +343,39 @@ namespace GameAudioKeys.Tests
                 check = InstallLocation.Evaluate(unresolved[i], roots, FakeSecurity(SafeTree()));
                 Check("install-eval-unresolved-" + i.ToString(CultureInfo.InvariantCulture), !check.Safe, unresolved[i]);
             }
+
+            // 4.8 대상의 새 경로 정규화(UseLegacyPathHandling=false)에서도 상위 폴더 탈출·
+            // 대체 데이터 스트림·장치 경로는 안전한 설치로 인정하지 않는다.
+            string[] tricky =
+            {
+                @"C:\Program Files\Vendor\WAK\..\..\..\Users\me\WindowsAudioKeys.exe",
+                @"C:\Program Files\Vendor\WAK\WindowsAudioKeys.exe:evil",
+                @"C:\Program Files\Vendor\WAK\WindowsAudioKeys.exe::$DATA",
+                @"\\?\C:\Program Files\Vendor\WAK\WindowsAudioKeys.exe",
+                @"\\.\C:\Program Files\Vendor\WAK\WindowsAudioKeys.exe"
+            };
+            for (int i = 0; i < tricky.Length; i++)
+            {
+                check = InstallLocation.Evaluate(tricky[i], roots, FakeSecurity(SafeTree()));
+                Check("install-eval-normalize-" + i.ToString(CultureInfo.InvariantCulture), !check.Safe, tricky[i]);
+            }
+
+            // 같은 폴더 안의 "." 구간은 정규화 후 같은 안전한 경로로 본다(과도한 거부가 아님을 확인).
+            check = InstallLocation.Evaluate(@"C:\Program Files\Vendor\.\WAK\WindowsAudioKeys.exe", roots, FakeSecurity(SafeTree()));
+            Check("install-eval-normalize-dot", check.Safe, check.ReasonKo);
+        }
+
+        // 앱과 테스트는 src/TargetFramework.cs 로 .NET Framework 4.8 을 대상으로 선언한다.
+        // 선언이 빠지면 WinForms 고DPI(PerMonitorV2)와 4.5 이후 호환 동작이 모두 꺼진다.
+        private static void TestTargetFramework()
+        {
+            string name = AppDomain.CurrentDomain.SetupInformation.TargetFrameworkName;
+            Check("target-framework-4.8", name == ".NETFramework,Version=v4.8", name ?? "(없음)");
+
+            // 4.6.2 미만 대상이면 런타임이 이 스위치 기본값을 true 로 정의한다. 4.8 대상이면 정의되지 않거나 false.
+            bool legacyPaths;
+            bool found = AppContext.TryGetSwitch("Switch.System.IO.UseLegacyPathHandling", out legacyPaths);
+            Check("target-framework-modern-paths", !(found && legacyPaths), "legacy path handling is on");
         }
 
         // 실제 파일 시스템: 임시 폴더(사용자 소유)의 실행 파일은 항상 거부된다.
@@ -1639,6 +1676,100 @@ namespace GameAudioKeys.Tests
             return state;
         }
 
+        // 설치 프로그램 제거 단계 전용 인수: 단독일 때만 받아들인다.
+        private static void TestUninstallCleanupCommandLine()
+        {
+            StartupCommandLine cleanup = StartupCli.Parse(new string[] { "--uninstall-cleanup" });
+            Check("cleanup-cli-alone", cleanup.Kind == StartupCommandKind.UninstallCleanup, cleanup.ErrorKo);
+
+            string[][] rejected = new string[][]
+            {
+                new string[] { "--uninstall-cleanup", "--uninstall-cleanup" },
+                new string[] { "--uninstall-cleanup", "--startup" },
+                new string[] { "--startup", "--uninstall-cleanup" },
+                new string[] { "--uninstall-cleanup", "--settings-dir", @"C:\temp\gak" },
+                new string[] { "--uninstall-cleanup", "--configure-startup", "disable" },
+                new string[] { "--uninstall-cleanup", "--request-user-sid", "S-1-5-21-1004336348-1177238915-682003330-1001" },
+                new string[] { "--uninstall-cleanup", "--help" },
+                new string[] { "--uninstall-cleanup=1" }
+            };
+
+            for (int i = 0; i < rejected.Length; i++)
+            {
+                StartupCommandLine parsed = StartupCli.Parse(rejected[i]);
+                Check("cleanup-cli-rejected-" + i.ToString(CultureInfo.InvariantCulture),
+                    parsed.Kind == StartupCommandKind.Error,
+                    string.Join(" ", rejected[i]));
+            }
+        }
+
+        // 제거 정리는 이 앱 소유 + 이름·SID 일치 + 이 실행 파일을 가리키는 작업만 고른다.
+        private static void TestUninstallCleanupSelection()
+        {
+            const string sidA = "S-1-5-21-1004336348-1177238915-682003330-1001";
+            const string sidB = "S-1-5-21-1004336348-1177238915-682003330-1002";
+            const string exe = @"C:\Program Files\WindowsAudioKeys\WindowsAudioKeys.exe";
+            const string other = @"C:\Program Files\OtherCopy\WindowsAudioKeys.exe";
+
+            StartupTaskDefinition defA = new StartupTaskDefinition(sidA, exe, Path.GetDirectoryName(exe), StartupConstants.StartupArgument);
+            StartupTaskDefinition defB = new StartupTaskDefinition(sidB, exe, Path.GetDirectoryName(exe), StartupConstants.StartupArgument);
+            StartupTaskDefinition defOther = new StartupTaskDefinition(sidB, other, Path.GetDirectoryName(other), StartupConstants.StartupArgument);
+
+            List<StartupTaskEntry> entries = new List<StartupTaskEntry>();
+            // 두 사용자의 정상 소유 작업(대상)
+            entries.Add(new StartupTaskEntry(defA.TaskName, MatchingSnapshot(defA)));
+            StartupTaskSnapshot quotedB = MatchingSnapshot(defB);
+            quotedB.Actions[0].Path = "\"" + exe.ToUpperInvariant() + "\"";
+            entries.Add(new StartupTaskEntry(defB.TaskName, quotedB));
+
+            // 다른 설치 경로를 가리키는 작업(제외)
+            entries.Add(new StartupTaskEntry(defOther.TaskName, MatchingSnapshot(defOther)));
+            entries.Add(new StartupTaskEntry(defOther.TaskName + "x", MatchingSnapshot(defOther)));
+
+            // 소유 표식 없음(제외)
+            StartupTaskSnapshot foreign = MatchingSnapshot(defA);
+            foreign.Description = "Someone else's task";
+            entries.Add(new StartupTaskEntry(defA.TaskName, foreign));
+
+            // 이름과 실행 계정 SID가 어긋남(제외)
+            entries.Add(new StartupTaskEntry(StartupConstants.BuildTaskName(sidB) + "0", MatchingSnapshot(defA)));
+
+            // 동작 두 개(제외)
+            StartupTaskSnapshot twoActions = MatchingSnapshot(defA);
+            twoActions.Actions.Add(twoActions.Actions[0]);
+            entries.Add(new StartupTaskEntry(defA.TaskName, twoActions));
+
+            // 환경 변수 경로(제외)
+            StartupTaskSnapshot envPath = MatchingSnapshot(defA);
+            envPath.Actions[0].Path = @"%ProgramFiles%\WindowsAudioKeys\WindowsAudioKeys.exe";
+            entries.Add(new StartupTaskEntry(defA.TaskName, envPath));
+
+            // 이 앱 이름 형식이 아닌 작업(무시) / 읽기 실패(실패로 집계)
+            entries.Add(new StartupTaskEntry("SomeOtherTask", MatchingSnapshot(defA)));
+            entries.Add(new StartupTaskEntry("WindowsAudioKeys-unreadable", StartupTaskSnapshot.Unreadable("x")));
+            entries.Add(null);
+
+            UninstallCleanupSelection selection = UninstallCleanupPlanner.Select(entries, exe);
+            Check("cleanup-select-owned-only",
+                selection.TaskNames.Count == 2
+                    && selection.TaskNames.Contains(defA.TaskName)
+                    && selection.TaskNames.Contains(defB.TaskName),
+                string.Join(", ", selection.TaskNames.ToArray()));
+            Check("cleanup-unreadable-counted", selection.Unreadable == 1,
+                selection.Unreadable.ToString(CultureInfo.InvariantCulture));
+
+            Check("cleanup-path-normalized",
+                UninstallCleanupPlanner.SameFullPath(@"C:\Program Files\X\..\WindowsAudioKeys\WindowsAudioKeys.exe", exe)
+                    && !UninstallCleanupPlanner.SameFullPath(@"WindowsAudioKeys.exe", exe)
+                    && !UninstallCleanupPlanner.SameFullPath(null, exe),
+                "full-path comparison");
+
+            Check("cleanup-empty-input",
+                UninstallCleanupPlanner.Select(null, exe).TaskNames.Count == 0
+                    && UninstallCleanupPlanner.Select(entries, null).TaskNames.Count == 0,
+                "null input selects nothing");
+        }
+
         private static StartupTaskSnapshot MatchingSnapshot(StartupTaskDefinition definition)
         {
             StartupTaskSnapshot snapshot = new StartupTaskSnapshot();
@@ -1728,6 +1859,105 @@ namespace GameAudioKeys.Tests
         private static bool Same(HotkeyBinding left, HotkeyBinding right)
         {
             return left != null && right != null && left.SameAs(right);
+        }
+
+        // 실행 파일에 내장하는 .ico: 모든 크기가 들어 있고, Windows가 각 크기를 읽을 수 있어야 한다.
+        private static void TestAppIconFile()
+        {
+            byte[] ico;
+            using (MemoryStream stream = new MemoryStream())
+            {
+                AppIcons.WriteIco(stream, AppIcons.Accent, AppIcons.StandardSizes);
+                ico = stream.ToArray();
+            }
+
+            int count = BitConverter.ToUInt16(ico, 4);
+            Check("icon-header",
+                BitConverter.ToUInt16(ico, 0) == 0 && BitConverter.ToUInt16(ico, 2) == 1
+                    && count == AppIcons.StandardSizes.Length,
+                "count=" + count.ToString(CultureInfo.InvariantCulture));
+
+            bool entriesValid = true;
+            string entryDetail = string.Empty;
+            for (int i = 0; i < count && entriesValid; i++)
+            {
+                int entry = 6 + (16 * i);
+                int width = ico[entry] == 0 ? 256 : ico[entry];
+                int bytes = BitConverter.ToInt32(ico, entry + 8);
+                int offset = BitConverter.ToInt32(ico, entry + 12);
+                entriesValid = width == AppIcons.StandardSizes[i]
+                    && BitConverter.ToUInt16(ico, entry + 6) == 32
+                    && bytes > 0 && offset > 0 && (long)offset + bytes <= ico.Length;
+                entryDetail = "entry " + i.ToString(CultureInfo.InvariantCulture) + " width=" + width.ToString(CultureInfo.InvariantCulture);
+            }
+
+            Check("icon-entries", entriesValid, entryDetail);
+
+            // 256 미만 DIB 항목: System.Drawing(Windows 아이콘 로더 사용)이 요청 크기를 그대로 골라 읽는지 확인한다.
+            // 256 PNG 항목: .NET Framework System.Drawing.Icon은 너비 바이트 0(=256) 항목을 고르지 못하므로
+            // PNG를 직접 디코드해 확인한다(탐색기·셸 로더는 이 항목을 읽는다).
+            for (int i = 0; i < AppIcons.StandardSizes.Length; i++)
+            {
+                int size = AppIcons.StandardSizes[i];
+                System.Drawing.Bitmap bitmap = null;
+                System.Drawing.Icon icon = null;
+                try
+                {
+                    if (size >= 256)
+                    {
+                        int bytes = BitConverter.ToInt32(ico, 6 + (16 * i) + 8);
+                        int offset = BitConverter.ToInt32(ico, 6 + (16 * i) + 12);
+                        bool pngSignature = ico[offset] == 0x89 && ico[offset + 1] == (byte)'P'
+                            && ico[offset + 2] == (byte)'N' && ico[offset + 3] == (byte)'G';
+                        Check("icon-png-signature-256", pngSignature, "entry is not PNG");
+                        bitmap = new System.Drawing.Bitmap(new MemoryStream(ico, offset, bytes));
+                    }
+                    else
+                    {
+                        icon = new System.Drawing.Icon(new MemoryStream(ico), size, size);
+                        bitmap = icon.ToBitmap();
+                    }
+
+                    // 모서리는 둥근 타일 밖이라 투명, 위쪽 가운데(타일 안쪽)는 불투명이어야 한다.
+                    bool sized = bitmap.Width == size && bitmap.Height == size;
+                    System.Drawing.Color corner = sized ? bitmap.GetPixel(0, 0) : System.Drawing.Color.Empty;
+                    System.Drawing.Color inside = sized ? bitmap.GetPixel(size / 2, size / 8) : System.Drawing.Color.Empty;
+                    Check("icon-load-" + size.ToString(CultureInfo.InvariantCulture),
+                        sized && corner.A == 0 && inside.A == 255,
+                        "width=" + bitmap.Width.ToString(CultureInfo.InvariantCulture)
+                            + " corner.A=" + corner.A.ToString(CultureInfo.InvariantCulture)
+                            + " inside.A=" + inside.A.ToString(CultureInfo.InvariantCulture));
+                }
+                finally
+                {
+                    if (bitmap != null)
+                    {
+                        bitmap.Dispose();
+                    }
+
+                    if (icon != null)
+                    {
+                        icon.Dispose();
+                    }
+                }
+            }
+
+            using (System.Drawing.Icon multi = AppIcons.CreateMultiSize(AppIcons.Accent))
+            {
+                Check("icon-multisize-handle", multi.Handle != IntPtr.Zero && multi.Width > 0, "no handle");
+            }
+
+            bool rejected = false;
+            try
+            {
+                AppIcons.WriteIco(new MemoryStream(), AppIcons.Accent, new int[] { 8 });
+            }
+            catch (ArgumentOutOfRangeException)
+            {
+                rejected = true;
+            }
+
+            Check("icon-rejects-invalid-size", rejected, "size 8 accepted");
         }
 
         private static bool Near(float left, float right)

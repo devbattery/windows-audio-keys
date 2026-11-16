@@ -8,6 +8,11 @@
       bin\AudioProbe.exe             (diagnostic probe)
       bin\GameAudioKeys.Tests.exe    (noninteractive logic tests)
       bin\AudioFixture.exe           (silent audio fixture for end-to-end tests)
+      bin\WriteAppIcon.exe           (build tool: writes bin\WindowsAudioKeys.ico)
+
+    The executable icon is generated from src\AppIcons.cs (the same drawing code
+    the running app uses) and embedded with /win32icon, so there is no separate
+    .ico source file to keep in sync.
 
     After a successful build (and successful tests with -Test) the ready-to-run
     product pair is published at the repository root:
@@ -39,6 +44,10 @@ $outputDir = Join-Path $projectRoot 'bin'
 
 $core = Join-Path $projectRoot 'src\CoreAudio.cs'
 $assemblyInfo = Join-Path $projectRoot 'src\AssemblyInfo.cs'
+# Declares .NET Framework 4.8 as the target. Without it csc.exe output runs with
+# pre-4.5 compatibility quirks and WinForms ignores DpiAwareness=PerMonitorV2.
+# The app and the tests both compile it so tests run under the same quirks.
+$targetFramework = Join-Path $projectRoot 'src\TargetFramework.cs'
 $settings = Join-Path $projectRoot 'src\Settings.cs'
 $appLogic = Join-Path $projectRoot 'src\AppLogic.cs'
 $hotkeys = Join-Path $projectRoot 'src\HotkeyManager.cs'
@@ -59,6 +68,7 @@ $appManifest = Join-Path $projectRoot 'src\app.manifest'
 $tests = Join-Path $projectRoot 'tests\Tests.cs'
 $fixture = Join-Path $projectRoot 'fixture\AudioFixture.cs'
 $probeBuild = Join-Path $projectRoot 'probe\build.ps1'
+$iconWriter = Join-Path $projectRoot 'tools\WriteAppIcon.cs'
 
 $productExeName = 'WindowsAudioKeys.exe'
 $rootProduct = Join-Path $projectRoot $productExeName
@@ -71,6 +81,7 @@ $required = @(
     $drawing
     $core
     $assemblyInfo
+    $targetFramework
     $settings
     $appLogic
     $hotkeys
@@ -91,6 +102,7 @@ $required = @(
     $tests
     $fixture
     $probeBuild
+    $iconWriter
 )
 
 foreach ($path in $required) {
@@ -137,16 +149,38 @@ $common = @(
     '/codepage:65001'
 )
 
+# 실행 파일 아이콘: 앱과 같은 그리기 코드로 여러 크기 .ico를 만든 뒤 exe에 내장한다.
+# 이 아이콘이 없으면 탐색기·바로가기·작업 표시줄 고정 항목이 기본 빈 아이콘으로 보인다.
+$iconWriterOutput = Join-Path $outputDir 'WriteAppIcon.exe'
+$appIcon = Join-Path $outputDir 'WindowsAudioKeys.ico'
+Invoke-Compiler -Description 'Icon tool build' -Arguments ($common + @(
+    '/target:exe'
+    '/r:' + $winForms
+    '/r:' + $drawing
+    '/out:' + $iconWriterOutput
+    $targetFramework
+    $uiTheme
+    $appIcons
+    $iconWriter
+))
+
+& $iconWriterOutput $appIcon
+if ($LASTEXITCODE -ne 0) {
+    throw "Icon generation failed with exit code $LASTEXITCODE"
+}
+
 $appOutput = Join-Path $outputDir $productExeName
 Invoke-Compiler -Description 'Application build' -Arguments ($common + @(
     '/target:winexe'
     '/win32manifest:' + $appManifest
+    '/win32icon:' + $appIcon
     '/r:' + $winForms
     '/r:' + $drawing
     '/r:' + $webExtensions
     '/out:' + $appOutput
     $core
     $assemblyInfo
+    $targetFramework
     $settings
     $appLogic
     $hotkeys
@@ -173,12 +207,14 @@ Invoke-Compiler -Description 'Test build' -Arguments ($common + @(
     '/r:' + $drawing
     '/r:' + $webExtensions
     '/out:' + $testOutput
+    $targetFramework
     $core
     $settings
     $appLogic
     $startup
     $startupService
     $uiTheme
+    $appIcons
     $keyCapture
     $updateCheck
     $installLocation

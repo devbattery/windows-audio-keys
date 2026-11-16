@@ -11,4 +11,12 @@
       </requestedPrivileges>
     </security>
   </trustInfo>
+  <!-- Windows 10/11 호환 선언. 이 선언이 없으면 OS 버전이 Windows 8 로 보고되어 WinForms 가
+       PerMonitorV2 DPI 인식을 켜지 않는다. DPI 인식 방식 자체는 app.config 의 DpiAwareness 로 정한다
+       (매니페스트의 dpiAware/dpiAwareness 는 app.config 설정을 덮어쓰므로 넣지 않는다). -->
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
 </assembly>
