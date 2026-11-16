@@ -5,9 +5,11 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-16
+
 ### 추가
 
-- 설치 프로그램(`WindowsAudioKeys-v<버전>-setup.exe`)을 함께 배포합니다.
+- 설치 프로그램(`WindowsAudioKeys-v1.2.0-setup.exe`)을 함께 배포합니다.
   `C:\Program Files\WindowsAudioKeys`에 설치해 로그인 시 관리자 권한 자동 시작을 바로 켤 수
   있고, 시작 메뉴 바로가기와 제거 항목을 만듭니다. 업데이트는 새 설치 프로그램을 실행하면
   그 자리에서 진행되고 자동 시작 등록은 유지됩니다. 설치 없이 쓰는 ZIP 배포본도 계속
@@ -104,6 +106,7 @@
 - 브라우저처럼 여러 탭이 한 프로세스를 공유하는 앱은 프로세스 단위로 함께
   조절됩니다.
 
+[1.2.0]: https://github.com/devbattery/windows-audio-keys/releases/tag/v1.2.0
 [1.1.1]: https://github.com/devbattery/windows-audio-keys/releases/tag/v1.1.1
 [1.1.0]: https://github.com/devbattery/windows-audio-keys/releases/tag/v1.1.0
 [1.0.0]: https://github.com/devbattery/windows-audio-keys/releases/tag/v1.0.0
