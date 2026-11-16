@@ -4,6 +4,7 @@
 // executable, task name or XML.
 
 using System;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
@@ -79,6 +80,7 @@ namespace GameAudioKeys
     {
         private const int TaskCreateOrUpdate = 6;
         private const int TaskDeleteNone = 0;
+        private const int TaskEnumHidden = 1;               // TASK_ENUM_HIDDEN
         private const int ErrorFileNotFound = unchecked((int)0x80070002);
         private const int ErrorPathNotFound = unchecked((int)0x80070003);
 
@@ -228,6 +230,28 @@ namespace GameAudioKeys
                     throw;
                 }
             }
+        }
+
+        // 루트 폴더에서 이 앱 이름 형식(WindowsAudioKeys-*)인 작업을 숨김 작업까지 모두 읽는다.
+        // 판정은 UninstallCleanupPlanner가 한다. 목록 자체를 읽지 못하면 예외를 그대로 올린다.
+        public static List<StartupTaskEntry> ListNamedTasks()
+        {
+            List<StartupTaskEntry> entries = new List<StartupTaskEntry>();
+            dynamic service = CreateService();
+            dynamic folder = service.GetFolder(StartupConstants.TaskFolderPath);
+            dynamic tasks = folder.GetTasks(TaskEnumHidden);
+            int count = (int)tasks.Count;
+            for (int i = 1; i <= count; i++)
+            {
+                dynamic task = tasks.Item(i);
+                string name = (string)task.Name;
+                if (name != null && name.StartsWith(StartupConstants.TaskNamePrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    entries.Add(new StartupTaskEntry(name, ReadSnapshot(task)));
+                }
+            }
+
+            return entries;
         }
 
         private static dynamic CreateService()
@@ -741,6 +765,43 @@ namespace GameAudioKeys
             catch (Exception ex)
             {
                 ShowError("자동 시작 설정을 적용하지 못했습니다: " + StartupTaskService.Describe(ex));
+                return 1;
+            }
+        }
+
+        // 설치 프로그램의 제거 단계 전용 모드(단일 실행 확인보다 먼저 처리).
+        // 관리자 권한으로 숨김 실행되므로 메시지 상자를 띄우지 않고 종료 코드로만 결과를 알린다.
+        // 0 = 지울 작업을 모두 지움(없던 경우 포함), 1 = 일부를 읽거나 지우지 못함, 66 = 관리자 권한 아님.
+        public static int RunUninstallCleanup()
+        {
+            try
+            {
+                if (!IsElevated())
+                {
+                    return 66;
+                }
+
+                UninstallCleanupSelection selection = UninstallCleanupPlanner.Select(
+                    StartupTaskService.ListNamedTasks(),
+                    OwnExecutablePath());
+
+                int failures = selection.Unreadable;
+                foreach (string taskName in selection.TaskNames)
+                {
+                    try
+                    {
+                        StartupTaskService.Delete(taskName);
+                    }
+                    catch (Exception)
+                    {
+                        failures++;
+                    }
+                }
+
+                return failures == 0 ? 0 : 1;
+            }
+            catch (Exception)
+            {
                 return 1;
             }
         }

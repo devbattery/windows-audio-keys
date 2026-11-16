@@ -593,7 +593,16 @@ namespace GameAudioKeys
             }
 
             base.WndProc(ref m);
+
+            // 로그오프·종료, 또는 설치 프로그램(Restart Manager)이 앱 종료를 요청하면 숨긴 설정 창만
+            // 닫히고 트레이가 남는다. 세션 종료가 확정되면(wParam != 0) 앱 전체를 정상 종료한다.
+            if (m.Msg == WmEndSession && m.WParam != IntPtr.Zero)
+            {
+                this.context.ExitApp();
+            }
         }
+
+        private const int WmEndSession = 0x0016;
 
         protected override void Dispose(bool disposing)
         {

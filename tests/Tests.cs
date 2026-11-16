@@ -95,6 +95,8 @@ namespace GameAudioKeys.Tests
             TestStartupLocationWarning();
             TestStartupTaskNotFound();
             TestAppIconFile();
+            TestUninstallCleanupCommandLine();
+            TestUninstallCleanupSelection();
         }
 
         // 작업이 없을 때(처음 켜는 경우) 조회는 "미등록"이어야 한다. dynamic COM 호출에서는
@@ -1672,6 +1674,100 @@ namespace GameAudioKeys.Tests
             state.Kind = kind;
             state.MessageKo = kind.ToString();
             return state;
+        }
+
+        // 설치 프로그램 제거 단계 전용 인수: 단독일 때만 받아들인다.
+        private static void TestUninstallCleanupCommandLine()
+        {
+            StartupCommandLine cleanup = StartupCli.Parse(new string[] { "--uninstall-cleanup" });
+            Check("cleanup-cli-alone", cleanup.Kind == StartupCommandKind.UninstallCleanup, cleanup.ErrorKo);
+
+            string[][] rejected = new string[][]
+            {
+                new string[] { "--uninstall-cleanup", "--uninstall-cleanup" },
+                new string[] { "--uninstall-cleanup", "--startup" },
+                new string[] { "--startup", "--uninstall-cleanup" },
+                new string[] { "--uninstall-cleanup", "--settings-dir", @"C:\temp\gak" },
+                new string[] { "--uninstall-cleanup", "--configure-startup", "disable" },
+                new string[] { "--uninstall-cleanup", "--request-user-sid", "S-1-5-21-1004336348-1177238915-682003330-1001" },
+                new string[] { "--uninstall-cleanup", "--help" },
+                new string[] { "--uninstall-cleanup=1" }
+            };
+
+            for (int i = 0; i < rejected.Length; i++)
+            {
+                StartupCommandLine parsed = StartupCli.Parse(rejected[i]);
+                Check("cleanup-cli-rejected-" + i.ToString(CultureInfo.InvariantCulture),
+                    parsed.Kind == StartupCommandKind.Error,
+                    string.Join(" ", rejected[i]));
+            }
+        }
+
+        // 제거 정리는 이 앱 소유 + 이름·SID 일치 + 이 실행 파일을 가리키는 작업만 고른다.
+        private static void TestUninstallCleanupSelection()
+        {
+            const string sidA = "S-1-5-21-1004336348-1177238915-682003330-1001";
+            const string sidB = "S-1-5-21-1004336348-1177238915-682003330-1002";
+            const string exe = @"C:\Program Files\WindowsAudioKeys\WindowsAudioKeys.exe";
+            const string other = @"C:\Program Files\OtherCopy\WindowsAudioKeys.exe";
+
+            StartupTaskDefinition defA = new StartupTaskDefinition(sidA, exe, Path.GetDirectoryName(exe), StartupConstants.StartupArgument);
+            StartupTaskDefinition defB = new StartupTaskDefinition(sidB, exe, Path.GetDirectoryName(exe), StartupConstants.StartupArgument);
+            StartupTaskDefinition defOther = new StartupTaskDefinition(sidB, other, Path.GetDirectoryName(other), StartupConstants.StartupArgument);
+
+            List<StartupTaskEntry> entries = new List<StartupTaskEntry>();
+            // 두 사용자의 정상 소유 작업(대상)
+            entries.Add(new StartupTaskEntry(defA.TaskName, MatchingSnapshot(defA)));
+            StartupTaskSnapshot quotedB = MatchingSnapshot(defB);
+            quotedB.Actions[0].Path = "\"" + exe.ToUpperInvariant() + "\"";
+            entries.Add(new StartupTaskEntry(defB.TaskName, quotedB));
+
+            // 다른 설치 경로를 가리키는 작업(제외)
+            entries.Add(new StartupTaskEntry(defOther.TaskName, MatchingSnapshot(defOther)));
+            entries.Add(new StartupTaskEntry(defOther.TaskName + "x", MatchingSnapshot(defOther)));
+
+            // 소유 표식 없음(제외)
+            StartupTaskSnapshot foreign = MatchingSnapshot(defA);
+            foreign.Description = "Someone else's task";
+            entries.Add(new StartupTaskEntry(defA.TaskName, foreign));
+
+            // 이름과 실행 계정 SID가 어긋남(제외)
+            entries.Add(new StartupTaskEntry(StartupConstants.BuildTaskName(sidB) + "0", MatchingSnapshot(defA)));
+
+            // 동작 두 개(제외)
+            StartupTaskSnapshot twoActions = MatchingSnapshot(defA);
+            twoActions.Actions.Add(twoActions.Actions[0]);
+            entries.Add(new StartupTaskEntry(defA.TaskName, twoActions));
+
+            // 환경 변수 경로(제외)
+            StartupTaskSnapshot envPath = MatchingSnapshot(defA);
+            envPath.Actions[0].Path = @"%ProgramFiles%\WindowsAudioKeys\WindowsAudioKeys.exe";
+            entries.Add(new StartupTaskEntry(defA.TaskName, envPath));
+
+            // 이 앱 이름 형식이 아닌 작업(무시) / 읽기 실패(실패로 집계)
+            entries.Add(new StartupTaskEntry("SomeOtherTask", MatchingSnapshot(defA)));
+            entries.Add(new StartupTaskEntry("WindowsAudioKeys-unreadable", StartupTaskSnapshot.Unreadable("x")));
+            entries.Add(null);
+
+            UninstallCleanupSelection selection = UninstallCleanupPlanner.Select(entries, exe);
+            Check("cleanup-select-owned-only",
+                selection.TaskNames.Count == 2
+                    && selection.TaskNames.Contains(defA.TaskName)
+                    && selection.TaskNames.Contains(defB.TaskName),
+                string.Join(", ", selection.TaskNames.ToArray()));
+            Check("cleanup-unreadable-counted", selection.Unreadable == 1,
+                selection.Unreadable.ToString(CultureInfo.InvariantCulture));
+
+            Check("cleanup-path-normalized",
+                UninstallCleanupPlanner.SameFullPath(@"C:\Program Files\X\..\WindowsAudioKeys\WindowsAudioKeys.exe", exe)
+                    && !UninstallCleanupPlanner.SameFullPath(@"WindowsAudioKeys.exe", exe)
+                    && !UninstallCleanupPlanner.SameFullPath(null, exe),
+                "full-path comparison");
+
+            Check("cleanup-empty-input",
+                UninstallCleanupPlanner.Select(null, exe).TaskNames.Count == 0
+                    && UninstallCleanupPlanner.Select(entries, null).TaskNames.Count == 0,
+                "null input selects nothing");
         }
 
         private static StartupTaskSnapshot MatchingSnapshot(StartupTaskDefinition definition)

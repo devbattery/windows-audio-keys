@@ -13,6 +13,13 @@
       5. Packs dist\WindowsAudioKeys-v<ver>.zip with the five release files at
          the archive root.
       6. Writes dist\WindowsAudioKeys-v<ver>.zip.sha256 next to the ZIP.
+      7. Compiles installer\WindowsAudioKeys.iss with Inno Setup 7 into
+         dist\WindowsAudioKeys-v<ver>-setup.exe and writes its .sha256.
+
+    Inno Setup 7 is a packaging-only dependency (the app and build.ps1 do not need
+    it). ISCC.exe is looked up in $env:ISCC, then the per-user and per-machine
+    Inno Setup 7 folders. Install it with:
+      winget install --id JRSoftware.InnoSetup.7 -e -s winget
 
     Only dist\ is created or cleaned; the build already publishes the root pair.
 #>
@@ -28,6 +35,30 @@ $outputDir = Join-Path $projectRoot 'bin'
 $distDir = Join-Path $projectRoot 'dist'
 $rootProduct = Join-Path $projectRoot $productExeName
 $rootProductConfig = Join-Path $projectRoot $productConfigName
+
+# 0. 설치 파일 컴파일러(Inno Setup 7 ISCC.exe)를 먼저 찾는다. 없으면 빌드 전에 멈춘다.
+$installerScript = Join-Path $projectRoot 'installer\WindowsAudioKeys.iss'
+if (-not (Test-Path -LiteralPath $installerScript)) {
+    throw "Installer script not found: $installerScript"
+}
+
+# 환경 변수가 없는 계정(서비스 등)에서도 Join-Path가 null로 실패하지 않도록 있는 값만 쓴다.
+$isccCandidates = @($env:ISCC)
+foreach ($pair in @(
+        @($env:LOCALAPPDATA, 'Programs\Inno Setup 7\ISCC.exe'),
+        @($env:ProgramFiles, 'Inno Setup 7\ISCC.exe'),
+        @(${env:ProgramFiles(x86)}, 'Inno Setup 7\ISCC.exe'))) {
+    if (-not [string]::IsNullOrWhiteSpace($pair[0])) {
+        $isccCandidates += Join-Path $pair[0] $pair[1]
+    }
+}
+$iscc = $isccCandidates |
+    Where-Object { -not [string]::IsNullOrWhiteSpace($_) -and (Test-Path -LiteralPath $_ -PathType Leaf) } |
+    Select-Object -First 1
+if (-not $iscc) {
+    throw ("Inno Setup 7 (ISCC.exe) was not found. Install it with " +
+        "'winget install --id JRSoftware.InnoSetup.7 -e -s winget', or set `$env:ISCC to ISCC.exe.")
+}
 
 # 1. 빌드와 테스트. build.ps1 은 실패 시 예외를 던진다.
 & (Join-Path $projectRoot 'build.ps1') -Test
@@ -156,7 +187,27 @@ $checksumPath = $zip + '.sha256'
 $checksumText = $zipHash + '  ' + $packageName + '.zip' + "`n"
 [System.IO.File]::WriteAllText($checksumPath, $checksumText, [System.Text.Encoding]::ASCII)
 
-# 7. 결과 요약.
+# 7. 설치 파일: 루트 배포본(3단계에서 bin 과 같음을 확인)을 Program Files 설치 프로그램으로 묶는다.
+$setupName = $packageName + '-setup.exe'
+$setup = Join-Path $distDir $setupName
+& $iscc '/Qp' ('/DAppVersion=' + $version) $installerScript
+if ($LASTEXITCODE -ne 0) {
+    throw "Inno Setup compile failed with exit code $LASTEXITCODE"
+}
+
+if (-not (Test-Path -LiteralPath $setup)) {
+    throw "Installer was not produced: $setup"
+}
+
+$setupHash = (Get-Sha256 $setup).ToLowerInvariant()
+[System.IO.File]::WriteAllText(
+    $setup + '.sha256',
+    $setupHash + '  ' + $setupName + "`n",
+    [System.Text.Encoding]::ASCII)
+
+# 8. 결과 요약.
 Write-Host ("Version: {0}" -f $version)
 Write-Host ("Package: {0}" -f $zip)
 Write-Host ("SHA256: {0}" -f $zipHash)
+Write-Host ("Installer: {0}" -f $setup)
+Write-Host ("SHA256: {0}" -f $setupHash)

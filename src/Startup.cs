@@ -21,6 +21,8 @@ namespace GameAudioKeys
         public const string StartupArgument = "--startup";
         public const string HelperEnableSwitch = "--configure-startup";
         public const string HelperSidSwitch = "--request-user-sid";
+        // 설치 프로그램의 제거 단계 전용(관리자 권한, 숨김 실행). 단독으로만 허용한다.
+        public const string UninstallCleanupSwitch = "--uninstall-cleanup";
         public const string SettingsDirectoryEnvironment = "GAME_AUDIO_KEYS_SETTINGS_DIR";
 
         // Task Scheduler constants used both by the definition writer and the COM
@@ -103,6 +105,7 @@ namespace GameAudioKeys
     {
         Run,
         Helper,
+        UninstallCleanup,
         Error
     }
 
@@ -129,6 +132,7 @@ namespace GameAudioKeys
             bool settingsSeen = false;
             bool configureSeen = false;
             bool sidSeen = false;
+            bool cleanupSeen = false;
             string configureValue = null;
             string sidValue = null;
 
@@ -144,6 +148,15 @@ namespace GameAudioKeys
                     }
 
                     startupSeen = true;
+                }
+                else if (argument == StartupConstants.UninstallCleanupSwitch)
+                {
+                    if (cleanupSeen)
+                    {
+                        return Error(result, "--uninstall-cleanup 은 한 번만 지정할 수 있습니다.");
+                    }
+
+                    cleanupSeen = true;
                 }
                 else if (argument == StartupConstants.HelperEnableSwitch)
                 {
@@ -277,6 +290,18 @@ namespace GameAudioKeys
                 {
                     return Error(result, "알 수 없는 인수입니다: " + argument);
                 }
+            }
+
+            // 제거 정리 모드는 다른 어떤 인수와도 섞이지 않아야 한다(설치 프로그램이 정확히 이 형태로만 호출).
+            if (cleanupSeen)
+            {
+                if (startupSeen || settingsSeen || configureSeen || sidSeen || result.HelpRequested)
+                {
+                    return Error(result, "--uninstall-cleanup 은 다른 인수와 함께 사용할 수 없습니다.");
+                }
+
+                result.Kind = StartupCommandKind.UninstallCleanup;
+                return result;
             }
 
             bool helper = configureSeen || sidSeen;
@@ -423,6 +448,11 @@ namespace GameAudioKeys
         }
 
         public bool OwnsDescription(string candidate)
+        {
+            return HasOwnershipMarker(candidate);
+        }
+
+        public static bool HasOwnershipMarker(string candidate)
         {
             return candidate != null
                 && candidate.IndexOf(StartupConstants.OwnershipMarker, StringComparison.Ordinal) >= 0;
@@ -871,6 +901,121 @@ namespace GameAudioKeys
                     plan.Action = StartupApplyAction.Refuse;
                     plan.MessageKo = "자동 시작 작업 상태를 알 수 없어 변경하지 않았습니다.";
                     return plan;
+            }
+        }
+    }
+
+    // 작업 스케줄러에서 읽은 작업 하나(이름 + 스냅샷). 제거 정리 대상 판정에 쓴다.
+    internal sealed class StartupTaskEntry
+    {
+        public readonly string Name;
+        public readonly StartupTaskSnapshot Snapshot;
+
+        public StartupTaskEntry(string name, StartupTaskSnapshot snapshot)
+        {
+            this.Name = name;
+            this.Snapshot = snapshot;
+        }
+    }
+
+    internal sealed class UninstallCleanupSelection
+    {
+        // 지워도 되는 작업 이름(이 앱 소유 + 이 실행 파일을 가리킴)
+        public readonly List<string> TaskNames = new List<string>();
+
+        // 이름은 이 앱 형식이지만 읽지 못한 작업 수. 판단할 수 없으므로 지우지 않고 실패로 센다.
+        public int Unreadable;
+    }
+
+    // 제거 프로그램이 관리자 권한으로 지울 작업을 고른다. 다른 프로그램·다른 설치본의 작업을
+    // 지우지 않도록 아래 조건을 모두 만족하는 작업만 고른다.
+    //  - 작업 이름이 "WindowsAudioKeys-<실행 계정 SID>"와 정확히 같다.
+    //  - 설명에 이 앱의 소유 표식이 있다.
+    //  - 실행 동작이 하나이고, 그 경로가 지금 제거되는 실행 파일 경로와 같다.
+    internal static class UninstallCleanupPlanner
+    {
+        public static UninstallCleanupSelection Select(IEnumerable<StartupTaskEntry> entries, string executablePath)
+        {
+            UninstallCleanupSelection selection = new UninstallCleanupSelection();
+            if (entries == null || string.IsNullOrEmpty(executablePath))
+            {
+                return selection;
+            }
+
+            foreach (StartupTaskEntry entry in entries)
+            {
+                if (entry == null
+                    || entry.Name == null
+                    || !entry.Name.StartsWith(StartupConstants.TaskNamePrefix, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                StartupTaskSnapshot snapshot = entry.Snapshot;
+                if (snapshot == null || !snapshot.ReadOk)
+                {
+                    selection.Unreadable++;
+                    continue;
+                }
+
+                if (!snapshot.TaskExists
+                    || !StartupTaskDefinition.HasOwnershipMarker(snapshot.Description)
+                    || !StartupSid.IsValid(snapshot.PrincipalUserId)
+                    || !string.Equals(
+                        entry.Name,
+                        StartupConstants.BuildTaskName(snapshot.PrincipalUserId),
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (snapshot.Actions.Count != 1
+                    || snapshot.Actions[0].Type != StartupConstants.ActionTypeExec
+                    || !SameFullPath(snapshot.Actions[0].Path, executablePath))
+                {
+                    continue;
+                }
+
+                selection.TaskNames.Add(entry.Name);
+            }
+
+            return selection;
+        }
+
+        // 따옴표·끝 구분자를 걷어 내고 전체 경로로 바꿔 비교한다. 해석할 수 없는 경로는 다른 것으로 본다.
+        internal static bool SameFullPath(string left, string right)
+        {
+            string a = FullPathOrNull(left);
+            string b = FullPathOrNull(right);
+            return a != null && b != null && string.Equals(a, b, StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static string FullPathOrNull(string path)
+        {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                return null;
+            }
+
+            string trimmed = path.Trim();
+            if (trimmed.Length >= 2 && trimmed[0] == '"' && trimmed[trimmed.Length - 1] == '"')
+            {
+                trimmed = trimmed.Substring(1, trimmed.Length - 2);
+            }
+
+            // 환경 변수(%...%)나 상대 경로는 이 앱이 등록하는 형태가 아니므로 대상에서 뺀다.
+            if (trimmed.IndexOf('%') >= 0 || !Path.IsPathRooted(trimmed))
+            {
+                return null;
+            }
+
+            try
+            {
+                return Path.GetFullPath(trimmed).TrimEnd('\\');
+            }
+            catch (Exception)
+            {
+                return null;
             }
         }
     }
